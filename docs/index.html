@@ -1,0 +1,515 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Календарь</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="config.js"></script>
+<style>
+/* ============================ ТЕМЫ ============================ */
+:root, [data-theme="midnight"] {
+  --bg:#0f0f10; --panel:#1a1a1c; --panel2:#252528; --tx:#f2f2ee; --mut:#8e8e95;
+  --ac:#dfe5a0; --acbg:linear-gradient(135deg,#e8eeab,#cdcdf2); --acink:#17171a;
+  --card:#2a2a30; --cardink:#f2f2ee; --line:#2d2d33; --now:#ff6b6b;
+}
+[data-theme="indigo"]     { --bg:#dde5f3; --panel:#ecf1fa; --panel2:#ffffff; --tx:#1a2250; --mut:#7380a6; --ac:#5a4fcf; --acbg:#5a4fcf; --acink:#fff; --card:#5a4fcf; --cardink:#fff; --line:#cdd7ea; --now:#e5484d; }
+[data-theme="emerald"]    { --bg:#101a16; --panel:#1a2a24; --panel2:#233830; --tx:#e9f2ec; --mut:#86a095; --ac:#f2c53d; --acbg:#f2c53d; --acink:#1a1a12; --card:#3f6b59; --cardink:#f3fbf6; --line:#2a3f36; --now:#ff7a59; }
+[data-theme="bordeaux"]   { --bg:#17171a; --panel:#222228; --panel2:#2c2c34; --tx:#efeff2; --mut:#8f8f9b; --ac:#e0486d; --acbg:linear-gradient(135deg,#d1345b,#8f1d3f); --acink:#fff; --card:#6d1a37; --cardink:#fff; --line:#34343d; --now:#ffb347; }
+[data-theme="teal"]       { --bg:#0b1b21; --panel:#12303a; --panel2:#194150; --tx:#e6f6f4; --mut:#7fa7ab; --ac:#4de3c2; --acbg:#4de3c2; --acink:#05211c; --card:#1f6f78; --cardink:#eafffb; --line:#1e4652; --now:#ff8a6b; }
+[data-theme="terracotta"] { --bg:#e8d3c6; --panel:#f6efe9; --panel2:#ffffff; --tx:#3a2e33; --mut:#a09089; --ac:#d9593a; --acbg:#d9593a; --acink:#fff; --card:#3a2e33; --cardink:#f6efe9; --line:#e6d8cf; --now:#d9593a; }
+[data-theme="sage"]       { --bg:#eef2e0; --panel:#d9e6b4; --panel2:#fbfcf7; --tx:#1d2415; --mut:#66784d; --ac:#5f8226; --acbg:#5f8226; --acink:#fff; --card:#5f8226; --cardink:#fff; --line:#c6d89c; --now:#d1493a; }
+[data-theme="luxury"]     { --bg:#e9ecf2; --panel:#f8f7f4; --panel2:#ffffff; --tx:#1b2438; --mut:#8a8f9c; --ac:#1f2a44; --acbg:#1f2a44; --acink:#fff; --card:#1f2a44; --cardink:#f8f7f4; --line:#e4e0d8; --now:#b8905a; }
+
+/* ============================ БАЗА ============================ */
+:root {
+  --rn: 22;                              /* степень скругления 0…50, меняется в настройках */
+  --r:  calc(var(--rn) * 1%);            /* квадратные плитки: 50% = круг */
+  --rc: calc(8px + var(--rn) * .5px);    /* карточки, панели */
+  --rw: calc(var(--rn) * .9px);          /* вытянутые плитки недели */
+  --rs: calc(var(--rn) * .35px);         /* мелкие элементы */
+  --sat: env(safe-area-inset-top, 0px); --sab: env(safe-area-inset-bottom, 0px);
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; background: var(--bg); color: var(--tx); font: 500 15px/1.35 Onest, system-ui, sans-serif; }
+body { min-height: 100vh; padding: calc(var(--sat) + 14px) 14px calc(var(--sab) + 96px); max-width: 520px; margin: 0 auto; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+input, select, textarea { font: inherit; color: inherit; }
+.num { font-variant-numeric: tabular-nums; }
+svg { display: block; }
+
+header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+.nav { display: flex; align-items: center; gap: 4px; min-width: 0; }
+h1 { margin: 0 4px; font-size: 21px; font-weight: 650; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ic { width: 38px; height: 38px; display: grid; place-items: center; border-radius: var(--rs); background: var(--panel); color: var(--tx); flex: none; }
+.ic:active { transform: scale(.94); }
+
+.seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 4px; background: var(--panel); border-radius: var(--rc); margin-bottom: 14px; }
+.seg button { padding: 9px 0; border-radius: calc(var(--rc) - 4px); color: var(--mut); font-weight: 600; transition: background .2s, color .2s; }
+.seg button.on { background: var(--acbg); color: var(--acink); }
+
+.panel { background: var(--panel); border-radius: calc(var(--rc) + 6px); padding: 14px; }
+.sub { color: var(--mut); font-size: 13px; }
+
+/* ============================ МЕСЯЦ ============================ */
+.grid7 { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+.wd { text-align: center; color: var(--mut); font-size: 12px; font-weight: 600; padding-bottom: 4px; }
+.tile { aspect-ratio: 1; border-radius: var(--r); background: var(--panel2); display: grid; place-items: center; position: relative; font-weight: 600; font-size: 15px; transition: transform .12s; }
+.tile:active { transform: scale(.94); }
+.tile.out { opacity: .38; }
+.tile.today { box-shadow: inset 0 0 0 2px var(--ac); }
+.tile.sel { background: var(--acbg); color: var(--acink); box-shadow: none; }
+.dots { position: absolute; bottom: 14%; left: 0; right: 0; display: flex; justify-content: center; gap: 3px; }
+.dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--ac); }
+.tile.sel .dots i { background: var(--acink); }
+
+/* ============================ НЕДЕЛЯ ============================ */
+.week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+.wtile { aspect-ratio: 3 / 4.2; border-radius: var(--rw); background: var(--panel2); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; position: relative; }
+.wtile small { color: var(--mut); font-size: 12px; font-weight: 600; }
+.wtile b { font-size: 17px; font-weight: 650; }
+.wtile.today { box-shadow: inset 0 0 0 2px var(--ac); }
+.wtile.sel { background: var(--acbg); color: var(--acink); box-shadow: none; }
+.wtile.sel small { color: inherit; opacity: .75; }
+.wtile .dots { bottom: 9%; }
+.wtile.sel .dots i { background: var(--acink); }
+
+/* ============================ ДЕНЬ ============================ */
+.sect { margin: 16px 2px 8px; font-weight: 650; font-size: 17px; }
+.tl { display: flex; flex-direction: column; }
+.hr { display: grid; grid-template-columns: 52px 1fr; align-items: stretch; min-height: 62px; }
+.hl { color: var(--mut); font-size: 13px; font-weight: 600; padding-top: 6px; }
+.slot { position: relative; padding: 4px 0; display: flex; flex-direction: column; gap: 6px; border-top: 1px dashed var(--line); min-height: 62px; }
+.slot .plus { position: absolute; right: 8px; top: 50%; translate: 0 -50%; color: var(--mut); opacity: .0; transition: opacity .2s; }
+.slot:empty::after, .slot.empty::after { content: "Добавить"; position: absolute; left: 10px; top: 50%; translate: 0 -50%; color: var(--mut); font-size: 13px; opacity: .55; }
+.slot:active { background: color-mix(in srgb, var(--panel) 80%, transparent); border-radius: var(--rs); }
+.ev { width: 100%; text-align: left; background: var(--card); color: var(--cardink); border-radius: var(--rc); padding: 11px 14px; display: flex; flex-direction: column; gap: 3px; box-shadow: 0 6px 18px -10px rgba(0,0,0,.5); }
+.ev b { font-weight: 650; font-size: 16px; }
+.ev small { opacity: .8; font-size: 13px; }
+.ev .tag { font-size: 12px; opacity: .75; }
+.ev.allday { background: var(--panel); color: var(--tx); box-shadow: inset 0 0 0 1.5px var(--ac); }
+.now { position: absolute; left: -6px; right: 0; height: 0; border-top: 2px solid var(--now); z-index: 2; pointer-events: none; }
+.now::before { content: ""; position: absolute; left: -1px; top: -6px; width: 10px; height: 10px; border-radius: 50%; background: var(--now); }
+.agenda { display: flex; flex-direction: column; gap: 8px; }
+.empty { color: var(--mut); text-align: center; padding: 18px 8px; }
+.addrow { width: 100%; padding: 12px; border-radius: var(--rc); border: 1.5px dashed var(--line); color: var(--mut); font-weight: 600; }
+
+.fab { position: fixed; right: max(18px, calc(50% - 242px)); bottom: calc(var(--sab) + 22px); width: 58px; height: 58px; border-radius: calc(var(--rc) + 4px); background: var(--acbg); color: var(--acink); display: grid; place-items: center; box-shadow: 0 12px 28px -8px rgba(0,0,0,.55); z-index: 5; }
+.fab:active { transform: scale(.94); }
+
+/* ============================ ЛИСТЫ ============================ */
+.sheet { position: fixed; inset: 0; z-index: 20; display: none; }
+.sheet.open { display: block; }
+.scrim { position: absolute; inset: 0; background: rgba(0,0,0,.55); animation: fade .2s; }
+.sheet .box { position: absolute; left: 0; right: 0; bottom: 0; max-width: 520px; margin: 0 auto; max-height: 92vh; overflow-y: auto; background: var(--bg); border-radius: calc(var(--rc) + 8px) calc(var(--rc) + 8px) 0 0; padding: 18px 16px calc(var(--sab) + 24px); animation: up .25s cubic-bezier(.2,.8,.2,1); }
+@keyframes up { from { transform: translateY(40px); opacity: 0 } }
+@keyframes fade { from { opacity: 0 } }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+.box h2 { margin: 0 0 14px; font-size: 20px; font-weight: 650; }
+.box h3 { margin: 22px 0 8px; font-size: 14px; font-weight: 650; color: var(--mut); }
+.field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.field label, .lbl { font-size: 13px; color: var(--mut); font-weight: 600; }
+.in { width: 100%; background: var(--panel); border: 1.5px solid transparent; border-radius: var(--rc); padding: 12px 14px; outline: none; min-height: 46px; }
+.in:focus { border-color: var(--ac); }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { padding: 9px 13px; border-radius: var(--rs); background: var(--panel); font-weight: 600; font-size: 14px; color: var(--mut); }
+.chip.on { background: var(--acbg); color: var(--acink); }
+.chip.lock { opacity: .55; }
+.sw { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; background: var(--panel); border-radius: var(--rc); margin-bottom: 12px; }
+.tg { width: 46px; height: 28px; border-radius: 14px; background: var(--panel2); position: relative; transition: background .2s; flex: none; }
+.tg::after { content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: var(--mut); transition: .2s; }
+.tg.on { background: var(--acbg); } .tg.on::after { left: 21px; background: var(--acink); }
+.btn { width: 100%; padding: 14px; border-radius: var(--rc); background: var(--acbg); color: var(--acink); font-weight: 650; font-size: 16px; }
+.btn.alt { background: var(--panel); color: var(--tx); }
+.btn.danger { background: transparent; color: var(--now); box-shadow: inset 0 0 0 1.5px var(--now); }
+.btns { display: grid; gap: 10px; margin-top: 16px; }
+.themes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.th { aspect-ratio: 1; border-radius: var(--rs); position: relative; overflow: hidden; box-shadow: inset 0 0 0 1px rgba(128,128,128,.3); }
+.th i { position: absolute; left: 22%; right: 22%; bottom: 20%; height: 28%; border-radius: 30%; }
+.th.on { outline: 3px solid var(--ac); outline-offset: 2px; }
+.th .lk { position: absolute; top: 4px; right: 5px; font-size: 11px; }
+.th-name { text-align: center; font-size: 11px; color: var(--mut); margin-top: 4px; }
+input[type=range] { width: 100%; accent-color: var(--ac); height: 30px; }
+.prev { display: flex; gap: 8px; margin-top: 6px; }
+.prev .tile { width: 48px; flex: none; }
+.plan { background: var(--panel); border-radius: calc(var(--rc) + 4px); padding: 14px; margin-bottom: 10px; }
+.plan.cur { box-shadow: inset 0 0 0 2px var(--ac); }
+.plan h4 { margin: 0 0 6px; font-size: 17px; display: flex; justify-content: space-between; }
+.plan ul { margin: 6px 0 10px; padding-left: 18px; color: var(--mut); font-size: 13.5px; } .plan li { margin: 2px 0; }
+.plan .prices { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.plan .prices button { padding: 11px 6px; border-radius: var(--rs); background: var(--acbg); color: var(--acink); font-weight: 650; font-size: 14px; }
+.plan .prices button.alt { background: var(--panel2); color: var(--tx); }
+.kv { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; background: var(--panel); border-radius: var(--rc); margin-bottom: 8px; }
+.kv small { color: var(--mut); display: block; font-size: 12.5px; }
+.kv .mini { padding: 8px 12px; border-radius: var(--rs); background: var(--acbg); color: var(--acink); font-weight: 650; font-size: 13px; white-space: nowrap; }
+.kv .mini.alt { background: var(--panel2); color: var(--tx); }
+code.url { display: block; word-break: break-all; font-size: 12px; color: var(--mut); margin-top: 4px; }
+#toast { position: fixed; left: 50%; bottom: calc(var(--sab) + 96px); translate: -50% 0; background: var(--tx); color: var(--bg); padding: 11px 16px; border-radius: var(--rc); font-weight: 600; z-index: 40; opacity: 0; pointer-events: none; transition: opacity .2s; max-width: 86vw; text-align: center; }
+#toast.on { opacity: 1; }
+.skel { height: 260px; border-radius: var(--rc); background: var(--panel); opacity: .6; }
+button:focus-visible, .in:focus-visible { outline: 2px solid var(--ac); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="nav">
+    <button class="ic" data-act="prev" aria-label="Назад"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+    <h1 id="ttl" class="num"></h1>
+    <button class="ic" data-act="next" aria-label="Вперёд"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></button>
+  </div>
+  <button class="ic" data-act="settings" aria-label="Настройки"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg></button>
+</header>
+<nav class="seg" id="seg">
+  <button data-act="view" data-v="month">Месяц</button>
+  <button data-act="view" data-v="week">Неделя</button>
+  <button data-act="view" data-v="day">День</button>
+</nav>
+<main id="main"><div class="skel"></div></main>
+<button class="fab" data-act="add" aria-label="Добавить событие"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+<div class="sheet" id="sheet"><div class="scrim" data-act="close"></div><div class="box" id="box"></div></div>
+<div id="toast" role="status"></div>
+
+<script>
+"use strict";
+/* ============================ УТИЛИТЫ ============================ */
+const TG = window.Telegram && Telegram.WebApp;
+const initData = (TG && TG.initData) || "";
+const DEMO = !initData;                       // без Telegram показываем демо-данные, чтобы можно было посмотреть дизайн
+const CFG = window.CFG || {};
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const pad = (n) => String(n).padStart(2, "0");
+const K = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const sod = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+const addD = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+const hm = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+const MONTHS = ["Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
+const MONTHS_G = ["января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"];
+const WD = ["Вс","Пн","Вт","Ср","Чт","Пт","Сб"];
+const THEME_NAMES = { midnight:"Полночь", indigo:"Индиго", emerald:"Изумруд", bordeaux:"Бордо", teal:"Бирюза", terracotta:"Терракота", sage:"Шалфей", luxury:"Люкс" };
+const THEME_SW = { midnight:["#0f0f10","#dfe5a0"], indigo:["#dde5f3","#5a4fcf"], emerald:["#101a16","#f2c53d"], bordeaux:["#17171a","#d1345b"], teal:["#0b1b21","#4de3c2"], terracotta:["#e8d3c6","#d9593a"], sage:["#eef2e0","#5f8226"], luxury:["#e9ecf2","#1f2a44"] };
+const ICON = { lock: "🔒" };
+const wdOrder = () => (S.user.settings.week_start === 0 ? [0,1,2,3,4,5,6] : [1,2,3,4,5,6,0]);
+
+let toastT;
+function toast(t) { const el = $("#toast"); el.textContent = t; el.classList.add("on"); clearTimeout(toastT); toastT = setTimeout(() => el.classList.remove("on"), 2600); }
+function tap() { try { TG && TG.HapticFeedback && TG.HapticFeedback.selectionChanged(); } catch (e) {} }
+async function copy(t) {
+  try { await navigator.clipboard.writeText(t); } catch (e) { const a = document.createElement("textarea"); a.value = t; document.body.appendChild(a); a.select(); try { document.execCommand("copy"); } catch (_) {} a.remove(); }
+  toast("Ссылка скопирована");
+}
+function ask(msg) { return new Promise((res) => { if (TG && TG.showConfirm) TG.showConfirm(msg, res); else res(confirm(msg)); }); }
+
+/* ============================ СОСТОЯНИЕ И API ============================ */
+const S = { user: null, limits: null, plans: null, groups: [], themes: [], ics: null, events: [], by: {}, sel: sod(new Date()), view: "month", key: "", loading: false };
+
+async function api(action, data = {}) {
+  if (DEMO) return demoApi(action, data);
+  const r = await fetch(CFG.API, { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action, initData, tz: Intl.DateTimeFormat().resolvedOptions().timeZone, ...data }) });
+  if (!r.ok) throw new Error("http " + r.status);
+  return r.json();
+}
+
+/* ---------- демо (открытие файла в браузере без Telegram) ---------- */
+const DEMO_EVS = (() => {
+  const t = sod(new Date()), at = (d, h, m = 0) => new Date(t.getFullYear(), t.getMonth(), t.getDate() + d, h, m).toISOString();
+  const mk = (d, h, m, title, dur, extra = {}) => ({ id: crypto.randomUUID(), owner_id: 1, title, all_day: false, starts_at: at(d, h, m), occ_start: at(d, h, m), occ_end: dur ? at(d, h, m + dur) : null, ends_at: dur ? at(d, h, m + dur) : null, repeat: null, remind: [30], ...extra });
+  return [mk(0, 9, 0, "Планёрка", 60, { repeat: "weekly" }), mk(0, 11, 0, "Стоматолог", 80), mk(0, 14, 0, "Созвон с Аней", 60), mk(0, 19, 0, "Йога", 90),
+    mk(1, 10, 30, "Разработка", 90), mk(2, 18, 0, "Ужин с родителями", 120), mk(4, 0, 0, "День рождения мамы", 0, { all_day: true, repeat: "yearly", remind: [-540] }), mk(-2, 16, 0, "Встреча с клиентом", 60), mk(7, 12, 0, "Презентация", 60)];
+})();
+async function demoApi(a, d) {
+  await new Promise((r) => setTimeout(r, 80));
+  if (a === "init") return { user: { id: 1, plan: "pro", plan_until: new Date(Date.now() + 6 * 864e5).toISOString(), tz: "UTC", settings: S.user ? S.user.settings : { theme: "midnight", radius: 22, week_start: 1, view: "month" }, google: false },
+    limits: { maxEvents: 1e6, maxReminders: 5, repeat: true, ics: true, google: true, maxGroups: 1e6, themes: Object.keys(THEME_NAMES) }, plans: DEMO_PLANS, groups: [{ id: -100, title: "Семья" }], themes: Object.keys(THEME_NAMES), ics: "https://example.supabase.co/functions/v1/ics?t=demo", bot: "demo_bot" };
+  if (a === "events") return { events: DEMO_EVS.filter((e) => new Date(e.occ_start) <= new Date(d.to) && new Date(e.occ_start) >= new Date(d.from)) };
+  if (a === "save") { const s = d.starts_at; if (d.id) { const e = DEMO_EVS.find((x) => x.id === d.id); Object.assign(e, { title: d.title, all_day: d.all_day, starts_at: s, occ_start: s, ends_at: d.ends_at, occ_end: d.ends_at, repeat: d.repeat, remind: d.remind }); }
+    else DEMO_EVS.push({ id: crypto.randomUUID(), owner_id: d.owner_id, title: d.title, all_day: d.all_day, starts_at: s, occ_start: s, ends_at: d.ends_at, occ_end: d.ends_at, repeat: d.repeat, remind: d.remind }); return { ok: true, notes: [] }; }
+  if (a === "delete") { const i = DEMO_EVS.findIndex((x) => x.id === d.id); if (i >= 0) DEMO_EVS.splice(i, 1); return { ok: true }; }
+  if (a === "settings") { Object.assign(S.user.settings, d); return { ok: true }; }
+  return { error: "demo", message: "В демо-режиме это недоступно" };
+}
+const DEMO_PLANS = { free: { title: "Free", stars: { month: 0, year: 0 }, maxEvents: 40, maxReminders: 1, maxGroups: 1 }, plus: { title: "Plus", stars: { month: 100, year: 1000 }, maxReminders: 3, maxGroups: 3 }, pro: { title: "Pro", stars: { month: 250, year: 2500 }, maxReminders: 5 } };
+
+/* ============================ ЗАГРУЗКА ============================ */
+async function init() {
+  const r = await api("init");
+  if (r.error) { $("#main").innerHTML = `<div class="empty">Не удалось войти. Откройте календарь из бота.</div>`; return; }
+  Object.assign(S, { user: r.user, limits: r.limits, plans: r.plans, groups: r.groups, themes: r.themes, ics: r.ics, bot: r.bot });
+  S.view = S.user.settings.view || "month";
+  applyTheme();
+  S.key = "";
+  await load();
+}
+async function load(force) {
+  const m = new Date(S.sel.getFullYear(), S.sel.getMonth(), 1);
+  const key = `${m.getFullYear()}-${m.getMonth()}`;
+  if (!force && key === S.key) return render();
+  S.key = key;
+  const from = addD(m, -8), to = addD(new Date(m.getFullYear(), m.getMonth() + 1, 1), 8);
+  try { const r = await api("events", { from: from.toISOString(), to: to.toISOString() }); S.events = r.events || []; }
+  catch (e) { toast("Нет связи с сервером"); S.events = []; }
+  index(); render();
+}
+function index() {
+  S.by = {};
+  for (const e of S.events) {
+    const s = new Date(e.occ_start), en = e.occ_end ? new Date(e.occ_end) : null;
+    let last = sod(s);
+    if (en && e.all_day && en > s) last = sod(new Date(en.getTime() - 1));
+    for (let d = sod(s); d <= last; d = addD(d, 1)) (S.by[K(d)] ||= []).push(e);
+  }
+  for (const k in S.by) S.by[k].sort((a, b) => (b.all_day - a.all_day) || (new Date(a.occ_start) - new Date(b.occ_start)));
+}
+
+function applyTheme() {
+  const st = S.user.settings;
+  document.documentElement.dataset.theme = st.theme || "midnight";
+  document.documentElement.style.setProperty("--rn", st.radius ?? 22);
+  try { const bg = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim(); TG && TG.setHeaderColor && TG.setHeaderColor(bg); TG && TG.setBackgroundColor && TG.setBackgroundColor(bg); } catch (e) {}
+}
+
+/* ============================ ОТРИСОВКА ============================ */
+const svgPlus = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>`;
+
+function render() {
+  if (!S.user) return;
+  const v = S.view, d = S.sel;
+  document.querySelectorAll("#seg button").forEach((b) => b.classList.toggle("on", b.dataset.v === v));
+  $("#ttl").textContent = v === "month" ? `${MONTHS[d.getMonth()]} ${d.getFullYear()}`
+    : v === "week" ? weekTitle(d) : `${WD[d.getDay()]}, ${d.getDate()} ${MONTHS_G[d.getMonth()]}`;
+  $("#main").innerHTML = v === "month" ? monthHTML() : v === "week" ? weekHTML() + dayBlock(true) : dayBlock(false);
+  if (v !== "month") requestAnimationFrame(() => { const t = $("#tl-focus"); if (t) t.scrollIntoView({ block: "center" }); });
+}
+function weekStart(d) { const off = (d.getDay() - S.user.settings.week_start + 7) % 7; return addD(d, -off); }
+function weekTitle(d) { const a = weekStart(d), b = addD(a, 6); return a.getMonth() === b.getMonth() ? `${a.getDate()}–${b.getDate()} ${MONTHS_G[a.getMonth()]}` : `${a.getDate()} ${MONTHS_G[a.getMonth()].slice(0, 3)} – ${b.getDate()} ${MONTHS_G[b.getMonth()].slice(0, 3)}`; }
+const dots = (k) => { const n = Math.min((S.by[k] || []).length, 3); return n ? `<span class="dots">${"<i></i>".repeat(n)}</span>` : ""; };
+
+function monthHTML() {
+  const d = S.sel, first = new Date(d.getFullYear(), d.getMonth(), 1);
+  const off = (first.getDay() - S.user.settings.week_start + 7) % 7;
+  const days = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  const weeks = Math.ceil((off + days) / 7), start = addD(first, -off), today = K(new Date());
+  let h = `<div class="panel"><div class="grid7" style="margin-bottom:4px">${wdOrder().map((i) => `<div class="wd">${WD[i]}</div>`).join("")}</div><div class="grid7">`;
+  for (let i = 0; i < weeks * 7; i++) {
+    const c = addD(start, i), k = K(c);
+    h += `<button class="tile num ${c.getMonth() !== d.getMonth() ? "out" : ""} ${k === today ? "today" : ""} ${k === K(d) ? "sel" : ""}" data-act="day" data-k="${k}">${c.getDate()}${dots(k)}</button>`;
+  }
+  return h + `</div></div>` + agenda(d);
+}
+function weekHTML() {
+  const a = weekStart(S.sel), today = K(new Date());
+  let h = `<div class="panel"><div class="week">`;
+  for (let i = 0; i < 7; i++) {
+    const c = addD(a, i), k = K(c);
+    h += `<button class="wtile ${k === today ? "today" : ""} ${k === K(S.sel) ? "sel" : ""}" data-act="day" data-k="${k}"><small>${WD[c.getDay()]}</small><b class="num">${c.getDate()}</b>${dots(k)}</button>`;
+  }
+  return h + `</div></div>`;
+}
+function evTime(e) {
+  if (e.all_day) return "Весь день";
+  const s = new Date(e.occ_start), en = e.occ_end ? new Date(e.occ_end) : null;
+  return en ? `${hm(s)} – ${hm(en)}` : hm(s);
+}
+function evCard(e, extra = "") {
+  const g = S.groups.find((x) => x.id === e.owner_id);
+  return `<button class="ev ${e.all_day ? "allday" : ""}" data-act="edit" data-id="${esc(e.id)}"><b>${esc(e.title)}</b><small class="num">${evTime(e)}${e.repeat ? " · ↻" : ""}</small>${g ? `<span class="tag">👥 ${esc(g.title)}</span>` : ""}${extra}</button>`;
+}
+function agenda(d) {
+  const list = S.by[K(d)] || [];
+  return `<div class="sect">${d.getDate()} ${MONTHS_G[d.getMonth()]}</div><div class="agenda">${list.length ? list.map((e) => evCard(e)).join("") : `<div class="empty">В этот день пусто</div>`}<button class="addrow" data-act="add">+ Добавить событие</button></div>`;
+}
+function dayBlock(withHead) {
+  const d = S.sel, k = K(d), list = S.by[k] || [], now = new Date(), isToday = k === K(now);
+  const all = list.filter((e) => e.all_day), timed = list.filter((e) => !e.all_day);
+  const focusH = isToday ? Math.max(0, now.getHours() - 1) : Math.min(7, timed.length ? new Date(timed[0].occ_start).getHours() - 1 : 7);
+  let h = withHead ? `<div class="sect">${WD[d.getDay()]}, ${d.getDate()} ${MONTHS_G[d.getMonth()]}</div>` : "";
+  if (all.length) h += `<div class="agenda" style="margin-bottom:10px">${all.map((e) => evCard(e)).join("")}</div>`;
+  h += `<div class="tl">`;
+  for (let i = 0; i < 24; i++) {
+    const here = timed.filter((e) => { const s = new Date(e.occ_start); return sod(s) < sod(d) ? i === 0 : s.getHours() === i; });
+    h += `<div class="hr" ${i === focusH ? 'id="tl-focus"' : ""}><div class="hl num">${pad(i)}:00</div><div class="slot ${here.length ? "" : "empty"}" data-act="addAt" data-h="${i}">${here.map((e) => evCard(e)).join("")}`;
+    if (isToday && now.getHours() === i) h += `<div class="now" style="top:${(now.getMinutes() / 60) * 100}%"></div>`;
+    h += `</div></div>`;
+  }
+  return h + `</div>`;
+}
+
+/* ============================ ЛИСТЫ ============================ */
+function openSheet(html) { $("#box").innerHTML = html; $("#sheet").classList.add("open"); $("#box").scrollTop = 0; }
+function closeSheet() { $("#sheet").classList.remove("open"); }
+
+const REM_TIMED = [[5, "5 мин"], [15, "15 мин"], [30, "30 мин"], [60, "1 час"], [1440, "1 день"]];
+const REM_ALL = [[-540, "в 9:00"], [360, "накануне в 18:00"]];
+let F = null;   // состояние формы
+
+function openForm(ev, hour) {
+  const d = S.sel;
+  let base;
+  if (ev) base = { id: ev.id, owner_id: ev.owner_id, title: ev.title, notes: ev.notes || "", all_day: ev.all_day, s: new Date(ev.starts_at), e: ev.ends_at ? new Date(ev.ends_at) : null, repeat: ev.repeat || "", remind: [...(ev.remind || [])] };
+  else {
+    const now = new Date(); const h = hour ?? (K(d) === K(now) ? Math.min(23, now.getHours() + 1) : 10);
+    base = { id: null, owner_id: S.user.id, title: "", notes: "", all_day: false, s: new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, 0), e: null, repeat: "", remind: [30] };
+  }
+  F = base;
+  const L = S.limits;
+  const own = [{ id: S.user.id, t: "Мой календарь" }, ...S.groups.map((g) => ({ id: g.id, t: "👥 " + g.title }))];
+  openSheet(`
+    <h2>${ev ? "Событие" : "Новое событие"}</h2>
+    <div class="field"><label for="f-title">Название</label><input id="f-title" class="in" maxlength="200" placeholder="Например, стоматолог" value="${esc(F.title)}"></div>
+    <div class="sw" data-act="fAll"><span>Весь день</span><span class="tg ${F.all_day ? "on" : ""}" id="f-all"></span></div>
+    <div class="field"><label for="f-date">Дата</label><input id="f-date" type="date" class="in num" value="${K(F.s)}"></div>
+    <div class="row2" id="f-times" style="${F.all_day ? "display:none" : ""}">
+      <div class="field"><label for="f-start">Начало</label><input id="f-start" type="time" class="in num" value="${hm(F.s)}"></div>
+      <div class="field"><label for="f-end">Конец</label><input id="f-end" type="time" class="in num" value="${F.e ? hm(F.e) : ""}"></div>
+    </div>
+    <div class="field"><span class="lbl">Повтор</span><div class="chips" id="f-rep">
+      ${[["", "Нет"], ["daily", "Каждый день"], ["weekly", "Неделю"], ["monthly", "Месяц"], ["yearly", "Год"]].map(([v, t]) => {
+        const lock = v && !L.repeat; return `<button class="chip ${F.repeat === v ? "on" : ""} ${lock ? "lock" : ""}" data-act="fRep" data-v="${v}">${lock ? ICON.lock + " " : ""}${t}</button>`; }).join("")}
+    </div></div>
+    <div class="field"><span class="lbl">Напомнить <span class="sub">(до ${L.maxReminders})</span></span><div class="chips" id="f-rem"></div></div>
+    ${own.length > 1 && !ev ? `<div class="field"><label for="f-owner">Календарь</label><select id="f-owner" class="in">${own.map((o) => `<option value="${o.id}">${esc(o.t)}</option>`).join("")}</select></div>` : ""}
+    <div class="field"><label for="f-notes">Заметка</label><textarea id="f-notes" class="in" rows="2" maxlength="1000">${esc(F.notes)}</textarea></div>
+    <div class="btns"><button class="btn" data-act="fSave">Сохранить</button>${ev ? `<button class="btn danger" data-act="fDel">Удалить</button>` : ""}</div>
+    ${ev && ev.repeat ? `<p class="sub" style="text-align:center;margin:12px 0 0">Изменения применятся ко всей серии</p>` : ""}
+  `);
+  drawRem();
+  if (!ev) setTimeout(() => $("#f-title").focus({ preventScroll: true }), 300);
+}
+function drawRem() {
+  const opts = F.all_day ? REM_ALL : REM_TIMED;
+  $("#f-rem").innerHTML = opts.map(([m, t]) => `<button class="chip ${F.remind.includes(m) ? "on" : ""}" data-act="fRem" data-m="${m}">${t}</button>`).join("");
+}
+
+function openSettings() {
+  const st = S.user.settings, L = S.limits, p = S.user.plan;
+  const until = S.user.plan_until ? new Date(S.user.plan_until).toLocaleDateString("ru-RU") : "";
+  openSheet(`
+    <h2>Настройки</h2>
+    <h3>Тема</h3>
+    <div class="themes">${S.themes.map((t) => { const ok = L.themes.includes(t); return `<div><button class="th ${st.theme === t ? "on" : ""}" style="background:${THEME_SW[t][0]}" data-act="theme" data-t="${t}" aria-label="${THEME_NAMES[t]}"><i style="background:${THEME_SW[t][1]}"></i>${ok ? "" : `<span class="lk">🔒</span>`}</button><div class="th-name">${THEME_NAMES[t]}</div></div>`; }).join("")}</div>
+    <h3>Скругление углов</h3>
+    <input type="range" id="rad" min="0" max="50" step="1" value="${st.radius ?? 22}" aria-label="Скругление углов">
+    <div class="sub" style="display:flex;justify-content:space-between"><span>Острые</span><span>Круглые</span></div>
+    <div class="prev"><div class="tile num">12</div><div class="tile num sel">13</div><div class="tile num today">14</div><div class="tile num">15</div></div>
+    <h3>Неделя начинается с</h3>
+    <div class="chips"><button class="chip ${st.week_start === 1 ? "on" : ""}" data-act="ws" data-v="1">Понедельника</button><button class="chip ${st.week_start === 0 ? "on" : ""}" data-act="ws" data-v="0">Воскресенья</button></div>
+    <h3>Тариф</h3>
+    ${["free", "plus", "pro"].map((k) => planCard(k, p, until)).join("")}
+    <h3>Подключения</h3>
+    ${integrations()}
+    <h3>Данные</h3>
+    <div class="kv"><div>Удалить мои данные<small>Все события, настройки и подключения</small></div><button class="mini alt" data-act="wipe">Удалить</button></div>
+    <p class="sub" style="text-align:center;margin-top:18px">Мы храним только ваш Telegram ID, часовой пояс, настройки и события.</p>
+  `);
+}
+function planCard(k, cur, until) {
+  const P = S.plans[k], f = { free: [`До ${P.maxEvents} активных событий`, "1 напоминание", "1 группа", "2 темы"],
+    plus: ["События без лимита", "Повторы событий", "До 3 напоминаний", "Все 8 тем", "Подписка для Apple и Google (ICS)", "До 3 групп"],
+    pro: ["Всё из Plus", "Синхронизация с Google Календарём", "До 5 напоминаний", "Группы без лимита"] }[k];
+  return `<div class="plan ${cur === k ? "cur" : ""}"><h4><span>${P.title}</span><span class="sub">${k === "free" ? "бесплатно" : `${P.stars.month} ⭐/мес`}</span></h4>
+    <ul>${f.map((x) => `<li>${x}</li>`).join("")}</ul>
+    ${k === "free" ? (cur === "free" ? `<div class="sub">Ваш тариф</div>` : "") : cur === k ? `<div class="sub">Активен до ${until}</div>` : ""}
+    ${k !== "free" ? `<div class="prices"><button data-act="buy" data-p="${k}" data-d="month">${P.stars.month} ⭐ / мес</button><button class="alt" data-act="buy" data-p="${k}" data-d="year">${P.stars.year} ⭐ / год</button></div>` : ""}</div>`;
+}
+function integrations() {
+  const L = S.limits;
+  const ics = L.ics && S.ics
+    ? `<div class="kv"><div>Apple Календарь / подписка<small>Добавляйте ссылку как «Подписной календарь». Только чтение: события идут из бота в календарь.</small><code class="url">${esc(S.ics)}</code></div></div>
+       <div class="row2" style="margin-bottom:8px"><button class="btn alt" data-act="icsCopy">Скопировать</button><button class="btn alt" data-act="icsNew">Новая ссылка</button></div>`
+    : `<div class="kv"><div>Apple Календарь / подписка<small>🔒 Тариф Plus и выше</small></div></div>`;
+  const g = L.google
+    ? (S.user.google
+      ? `<div class="kv"><div>Google Календарь<small>Подключён</small></div><div style="display:flex;gap:6px"><button class="mini" data-act="gSync">Синхронизировать</button><button class="mini alt" data-act="gOff">Отключить</button></div></div>`
+      : `<div class="kv"><div>Google Календарь<small>Только события, без почты и контактов</small></div><button class="mini" data-act="gOn">Подключить</button></div>`)
+    : `<div class="kv"><div>Google Календарь<small>🔒 Тариф Pro</small></div></div>`;
+  return ics + g;
+}
+
+/* ============================ ДЕЙСТВИЯ ============================ */
+function formSave() {
+  const title = $("#f-title").value.trim();
+  if (!title) { toast("Введите название"); $("#f-title").focus(); return; }
+  const [Y, M, D] = $("#f-date").value.split("-").map(Number);
+  if (!Y) { toast("Укажите дату"); return; }
+  let starts, ends = null;
+  if (F.all_day) starts = new Date(Y, M - 1, D, 0, 0);
+  else {
+    const [sh, sm] = ($("#f-start").value || "09:00").split(":").map(Number);
+    starts = new Date(Y, M - 1, D, sh, sm);
+    const ev = $("#f-end").value;
+    if (ev) { const [eh, em] = ev.split(":").map(Number); const e = new Date(Y, M - 1, D, eh, em); if (e > starts) ends = e; }
+  }
+  const owner = $("#f-owner") ? Number($("#f-owner").value) : F.owner_id;
+  const btn = document.querySelector('[data-act="fSave"]'); btn.disabled = true;
+  api("save", { id: F.id, owner_id: owner, title, notes: $("#f-notes").value.trim() || null, all_day: F.all_day, starts_at: starts.toISOString(), ends_at: ends && ends.toISOString(), repeat: F.repeat || null, remind: F.remind })
+    .then(async (r) => {
+      btn.disabled = false;
+      if (r.error) { toast(r.message || "Не удалось сохранить"); if (r.error === "limit") setTimeout(openSettings, 900); return; }
+      closeSheet(); S.sel = sod(starts); (r.notes || []).forEach((n) => toast(n)); tap(); await load(true);
+    }).catch(() => { btn.disabled = false; toast("Нет связи с сервером"); });
+}
+
+document.addEventListener("click", async (e) => {
+  const el = e.target.closest("[data-act]"); if (!el) return;
+  const a = el.dataset.act, S0 = S.sel;
+  if (!S.user && a !== "close") return;
+  switch (a) {
+    case "prev": case "next": {
+      const n = a === "next" ? 1 : -1;
+      if (S.view === "month") { S.sel = new Date(S0.getFullYear(), S0.getMonth() + n, 1); const t = new Date(); if (S.sel.getMonth() === t.getMonth() && S.sel.getFullYear() === t.getFullYear()) S.sel = sod(t); }
+      else S.sel = addD(S0, S.view === "week" ? 7 * n : n);
+      tap(); return load();
+    }
+    case "view": S.view = el.dataset.v; tap(); api("settings", { view: S.view }).catch(() => {}); S.user.settings.view = S.view; return render();
+    case "day": { const [y, m, d] = el.dataset.k.split("-").map(Number); S.sel = new Date(y, m - 1, d); tap(); return load(); }
+    case "add": return openForm(null);
+    case "addAt": return openForm(null, Number(el.dataset.h));
+    case "edit": { const ev = S.events.find((x) => x.id === el.dataset.id); if (ev) openForm(ev); return; }
+    case "close": return closeSheet();
+    case "settings": return openSettings();
+    case "fAll": F.all_day = !F.all_day; $("#f-all").classList.toggle("on", F.all_day); $("#f-times").style.display = F.all_day ? "none" : ""; F.remind = F.all_day ? [-540] : [30]; return drawRem();
+    case "fRep": { const v = el.dataset.v; if (v && !S.limits.repeat) { toast("Повторы — в тарифе Plus"); return; } F.repeat = v; document.querySelectorAll("#f-rep .chip").forEach((c) => c.classList.toggle("on", c.dataset.v === v)); return; }
+    case "fRem": { const m = Number(el.dataset.m), i = F.remind.indexOf(m); if (i >= 0) F.remind.splice(i, 1); else { if (F.remind.length >= S.limits.maxReminders) { toast(`В вашем тарифе до ${S.limits.maxReminders} напоминаний`); return; } F.remind.push(m); } return drawRem(); }
+    case "fSave": return formSave();
+    case "fDel": if (await ask("Удалить событие?")) { await api("delete", { id: F.id }); closeSheet(); await load(true); } return;
+    case "theme": { const t = el.dataset.t; const r = await api("settings", { theme: t }); if (r.error) { toast(r.message || "Недоступно"); return; } S.user.settings.theme = t; applyTheme(); return openSettings(); }
+    case "ws": { const v = Number(el.dataset.v); await api("settings", { week_start: v }); S.user.settings.week_start = v; openSettings(); return render(); }
+    case "buy": {
+      const r = await api("invoice", { plan: el.dataset.p, period: el.dataset.d });
+      if (!r.url) return toast(r.message || "Оплата недоступна");
+      if (TG && TG.openInvoice) TG.openInvoice(r.url, async (s) => { if (s === "paid") { toast("Спасибо! Тариф активируется ✨"); setTimeout(async () => { await init(); openSettings(); }, 1500); } });
+      else window.open(r.url, "_blank");
+      return;
+    }
+    case "icsCopy": return copy(S.ics);
+    case "icsNew": if (await ask("Старая ссылка перестанет работать. Создать новую?")) { const r = await api("ics_rotate"); S.ics = r.ics; openSettings(); } return;
+    case "gOn": { const r = await api("google_url"); if (!r.url) return toast(r.message || "Недоступно"); TG && TG.openLink ? TG.openLink(r.url) : window.open(r.url, "_blank"); return toast("Подтвердите доступ в браузере и вернитесь сюда"); }
+    case "gSync": { toast("Синхронизирую…"); const r = await api("google_sync"); toast(r.error ? "Не получилось. Подключите заново" : `Готово: получено ${r.pulled}, отправлено ${r.pushed}`); await load(true); return; }
+    case "gOff": if (await ask("Отключить Google Календарь?")) { await api("google_disconnect"); S.user.google = false; openSettings(); } return;
+    case "wipe": if (await ask("Удалить все ваши данные? Это нельзя отменить.")) { const r = await api("delete_me", { confirm: "DELETE" }); if (r.ok) { toast("Данные удалены"); setTimeout(() => TG && TG.close && TG.close(), 1200); } } return;
+  }
+});
+document.addEventListener("input", (e) => {
+  if (e.target.id === "rad") document.documentElement.style.setProperty("--rn", e.target.value);
+});
+document.addEventListener("change", async (e) => {
+  if (e.target.id === "rad") { const v = Number(e.target.value); S.user.settings.radius = v; await api("settings", { radius: v }); }
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden && S.user && !DEMO) { init(); } });
+
+/* ============================ СТАРТ ============================ */
+if (TG) { try { TG.ready(); TG.expand(); } catch (e) {} }
+init().then(() => {
+  const g = new URLSearchParams(location.search).get("google");
+  if (g === "ok") toast("Google Календарь подключён ✅"); else if (g === "denied") toast("Доступ не выдан");
+  if (DEMO) toast("Демо-режим: данные не сохраняются");
+}).catch(() => { $("#main").innerHTML = `<div class="empty">Не удалось загрузить. Проверьте config.js</div>`; });
+</script>
+</body>
+</html>
