@@ -35,6 +35,7 @@ Call 'setMyCommands' @{ commands = @(
   @{ command = 'help'; description = 'Как добавлять события' },
   @{ command = 'words'; description = 'Слова-команды' },
   @{ command = 'plan'; description = 'Тарифы' },
+  @{ command = 'code'; description = 'Ввести код подписки' },
   @{ command = 'tz'; description = 'Часовой пояс' },
   @{ command = 'export'; description = 'Выгрузить мои данные' },
   @{ command = 'delete'; description = 'Удалить мои данные' },

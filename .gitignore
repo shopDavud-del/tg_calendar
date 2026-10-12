@@ -2,4 +2,3 @@
 *.secret
 node_modules/
 .supabase/
-supabase/.temp/

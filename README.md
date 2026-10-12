@@ -36,27 +36,36 @@ Google OAuth ──► функция «google»      Apple/Google подпис�
 
 ## Шаг 3. Секреты и функции
 
-Сгенерируйте три случайные строки (в терминале): `openssl rand -hex 24` (запустите три раза) — это `WEBHOOK_SECRET`, `CRON_SECRET`, `TOKEN_KEY`. **Сохраните их в надёжном месте**: потеряв `TOKEN_KEY`, вы потеряете возможность читать токены Google (пользователям придётся подключить Google заново).
+**3.1. Три случайные строки.** В терминале (PowerShell, Mac или Linux) запустите **три раза**:
 
-В папке проекта:
+```
+node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
+```
 
-```bash
+Это будут `WEBHOOK_SECRET`, `CRON_SECRET`, `TOKEN_KEY`. Сохраните их в надёжном месте и никому не показывайте: потеряв `TOKEN_KEY`, вы потеряете возможность читать токены Google (пользователям придётся подключить Google заново).
+
+**3.2. Файл `.env`.** В корне проекта скопируйте `.env.example` в файл `.env` и заполните значения (на Windows: `copy .env.example .env`, затем `notepad .env`). Файл `.env` уже в `.gitignore`, на GitHub он не попадёт. Секретов `SUPABASE_URL` и `SUPABASE_SERVICE_ROLE_KEY` в нём быть не должно: Supabase подставляет их сам.
+
+**3.3. Вход и привязка проекта.** Команды выполняются в папке проекта, по одной:
+
+```
 npx supabase login
+npx supabase projects list
 npx supabase link --project-ref ВАШ_REF
+```
 
-npx supabase secrets set \
-  BOT_TOKEN=123456:ABC... \
-  BOT_USERNAME=my_calendar_bot \
-  ADMIN_ID=ваш_telegram_id \
-  WEBHOOK_SECRET=... \
-  CRON_SECRET=... \
-  TOKEN_KEY=... \
-  APP_URL=https://ВАШ_GITHUB_ЛОГИН.github.io/НАЗВАНИЕ_РЕПОЗИТОРИЯ
+`projects list` показывает проекты аккаунта, под которым вы вошли. Убедитесь, что там нужный проект, и скопируйте его **Reference ID** (ровно 20 строчных латинских букв). Если проект не тот, значит вы вошли не под той почтой: `npx supabase logout`, откройте supabase.com/dashboard в окне инкогнито под нужной почтой и повторите `login`.
 
+**3.4. Секреты и функции:**
+
+```
+npx supabase secrets set --env-file .env
 npx supabase functions deploy bot api cron google ics --use-api
 ```
 
-`SUPABASE_URL` и `SUPABASE_SERVICE_ROLE_KEY` Supabase подставляет сам, их вводить не нужно.
+> Строки с `\` в конце (как в примерах для Mac/Linux) в PowerShell не работают. Используйте команды выше, каждую одной строкой.
+
+---
 
 ## Шаг 4. Мини-приложение на GitHub Pages
 
@@ -69,9 +78,16 @@ npx supabase functions deploy bot api cron google ics --use-api
 
 ## Шаг 5. Подключите бота
 
+Windows (PowerShell, в папке проекта; значения берутся из `.env`):
+
+```
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-bot.ps1 -ProjectRef ВАШ_REF
+```
+
+Mac / Linux:
+
 ```bash
-BOT_TOKEN=... WEBHOOK_SECRET=... PROJECT_REF=... APP_URL=https://логин.github.io/репозиторий \
-  ./scripts/setup-bot.sh
+BOT_TOKEN=... WEBHOOK_SECRET=... PROJECT_REF=... APP_URL=https://логин.github.io/репозиторий ./scripts/setup-bot.sh
 ```
 
 Скрипт ставит webhook, список команд и кнопку «Календарь» в меню бота.
@@ -132,6 +148,18 @@ Apple не даёт сторонним сервисам API для записи.
 
 ---
 
+## Что нового в v2
+
+Тариф Team для салонов, коды подписок и админ-панель, группа в режиме «команда», утренние и вечерние сводки, настройка напоминаний, 14 тем, отметки дней (зигзаг, мазок, точка, кольцо), яркость плиток, справка «Как добавлять события». Порядок обновления: `UPDATE.md`. Установка с нуля: после шага 2 выполните также `supabase/migrations/002_v2.sql`.
+
+## Админ-панель и коды подписок
+
+Открывается в мини-приложении: Настройки → «Админ-панель» (видна только вам, по `ADMIN_ID`). Там статистика, создание кодов (тариф, дни, число использований, количество), список кодов с отзывом, выдача тарифа по Telegram ID. То же из бота: `/newcode pro 30 1 5` (5 одноразовых кодов Pro на 30 дней), `/grant ID pro 30`, `/stats`. Пользователь вводит код командой `/code КОД` или в Настройках.
+
+## Салон / команда (тариф Team)
+
+В группе: `/mode team`, сотрудники пишут `/join`, запись: `запиши Анна маникюр завтра в 15:00 @мастер`. Подробно: `docs/GUIDE.md`. Тариф Team действует по тому, кто добавил бота в группу.
+
 ## Тарифы и Stars
 
 Цены и лимиты — в одном файле `supabase/functions/_shared/plans.ts`. После правки: `npx supabase functions deploy bot api cron ics google --use-api`.
@@ -146,6 +174,8 @@ Apple не даёт сторонним сервисам API для записи.
 | Подписка Apple / Google (ICS) | нет | да | да |
 | Синхронизация с Google | нет | нет | да |
 | Группы | 1 | 3 | без лимита |
+
+Тариф **Team** (500 ⭐/мес · 5000 ⭐/год): всё из Pro + режим салона (вкладка на каждого сотрудника, запись на сотрудника по @нику, админ видит всех, напоминания в группу и сотруднику лично).
 
 Новым пользователям выдаётся пробный Pro на 7 дней (`TRIAL_DAYS` в `plans.ts`, `0` — отключить).
 
@@ -199,5 +229,6 @@ supabase/
     google/                 возврат из Google OAuth
     ics/                    подписка для Apple/Google
     _shared/                тарифы, разбор фраз, время, Google, шифрование
-scripts/setup-bot.sh        webhook, команды, кнопка меню
+scripts/setup-bot.ps1/.sh    webhook, команды, кнопка меню (Windows / Mac, Linux)
+.env.example                шаблон секретов (копия .env не публикуется)
 ```

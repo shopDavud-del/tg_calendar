@@ -11,6 +11,8 @@ import { invoiceLink, reminderText, type Period } from "../_shared/payments.ts";
 import { parseIcs } from "../_shared/icsparse.ts";
 import { defaultRemind } from "../_shared/parse.ts";
 import type { Ev } from "../_shared/reminders.ts";
+import { displayName, extractMentions, findMember, isGroupAdmin, mention } from "../_shared/groups.ts";
+import { createCodes, redeem } from "../_shared/promo.ts";
 
 const BOT = () => env("BOT_USERNAME");
 const ADMIN = () => Number(env("ADMIN_ID"));
@@ -54,7 +56,7 @@ const HELP = `<b>Как добавлять события</b>
 
 Все слова-команды: /words
 Календарь: /app · Ближайшее: /list · Сегодня: /today
-Тарифы: /plan · Часовой пояс: /tz Asia/Tashkent
+Тарифы: /plan · Код подписки: /code КОД · Часовой пояс: /tz Asia/Tashkent
 Данные: /export · /delete`;
 
 const WORDS = `<b>Слова-команды (30)</b>
@@ -72,6 +74,7 @@ const GROUP_HELP = `<b>Календарь группы</b>
 /list — ближайшие события · /app — открыть календарь
 /ask on — спрашивать и про сообщения с датой без команды (по умолчанию выкл.)
 /ask off — не спрашивать
+/mode team — командный режим для салона (тариф Team) · /team — участники · /join — добавить себя в календарь · /notify on|off — дублировать напоминания в группу
 Весь список слов-команд — /words в личном чате со мной.
 
 <i>Чтобы я видел обычные сообщения, отключите Group Privacy в @BotFather: /mybots → ваш бот → Bot Settings → Group Privacy → Turn off. Либо сделайте меня администратором.</i>`;
@@ -124,6 +127,11 @@ async function privateCommand(m: Any, cmd: string, arg: string, user: Any) {
     }
     case "/today": case "/list": return listEvents(chat, user.id, user.tz, cmd === "/today");
     case "/plan": return plansScreen(chat, user.id);
+    case "/code": case "/redeem": {
+      if (!arg.trim()) return send(chat, "Отправьте код так: <code>/code CAL-XXXX-XXXX</code>");
+      const r = await redeem(user.id, arg);
+      return send(chat, r.ok ? `🎁 Код принят! Тариф <b>${PLANS[r.plan].title}</b> активен до ${new Date(r.until).toLocaleDateString("ru-RU", { timeZone: user.tz })}.` : `❌ ${esc(r.message)}`);
+    }
     case "/terms": return send(chat, "<b>Условия</b>\nТарифы Plus и Pro оплачиваются в Telegram Stars. Месячная подписка продлевается каждые 30 дней; отменить можно в любой момент: Настройки Telegram → Мои звёзды → Подписки. Оплаченный период сохраняется до конца. Возврат — по запросу через /paysupport.\nМы храним только ваш Telegram ID, часовой пояс, настройки и события.");
     case "/paysupport": return send(chat, `По оплате и возвратам напишите администратору: <a href="tg://user?id=${ADMIN()}">связаться</a>. Укажите, что и когда оплачивали.`);
     case "/export": return exportData(chat, user.id);
@@ -136,7 +144,16 @@ async function privateCommand(m: Any, cmd: string, arg: string, user: Any) {
 async function adminCommand(m: Any, cmd: string, arg: string) {
   const chat = m.chat.id;
   const a = arg.split(/\s+/);
+  if (cmd === "/newcode") {   // /newcode <plus|pro|team> <дней> [использований] [штук]
+    const [plan, days, uses, count] = [a[0], Number(a[1]), Number(a[2] ?? 1), Number(a[3] ?? 1)];
+    if (!["plus", "pro", "team"].includes(plan) || !days) return send(chat, "/newcode <plus|pro|team> <дней> [использований] [штук]\nнапример: <code>/newcode pro 30 1 5</code>");
+    const codes = await createCodes({ plan: plan as "plus", days, uses, count });
+    return send(chat, codes.length ? `Коды (${plan}, ${days} дн., по ${uses} исп.):\n<code>${codes.join("\n")}</code>` : "Не удалось создать коды (проверьте миграцию 002).");
+  }
   if (cmd === "/stats") {
+    const { data: tick } = await db.from("meta").select("value").eq("key", "last_tick").maybeSingle();
+    const ago = tick ? Math.round((Date.now() - new Date(tick.value as string).getTime()) / 60000) : null;
+    await send(chat, ago === null ? "⏱ Планировщик ещё ни разу не запускался: выполните supabase/cron.sql" : ago <= 3 ? `⏱ Планировщик работает (последний запуск ${ago} мин назад)` : `⚠️ Планировщик молчит ${ago} мин: проверьте cron.sql`);
     const [u, e, g, p] = await Promise.all([
       db.from("users").select("id", { count: "exact", head: true }),
       db.from("events").select("id", { count: "exact", head: true }),
@@ -173,7 +190,7 @@ async function groupMessage(m: Any, text: string) {
   if (!seen.has(key)) {
     seen.add(key);
     if (seen.size > 5000) seen.clear();
-    await db.from("group_members").upsert({ chat_id: chat.id, user_id: m.from.id }, { onConflict: "chat_id,user_id", ignoreDuplicates: true });
+    await db.from("group_members").upsert({ chat_id: chat.id, user_id: m.from.id, username: m.from.username ?? null, name: displayName(m.from) }, { onConflict: "chat_id,user_id" });
   }
   if (!text) return;
 
@@ -184,20 +201,30 @@ async function groupMessage(m: Any, text: string) {
     const cmd = cmd0.toLowerCase(), arg = rest.join(" ");
     if (cmd === "/start" || cmd === "/help") return send(chat.id, GROUP_HELP);
     if (cmd === "/words") return send(chat.id, WORDS);
-    if (cmd === "/app") return send(chat.id, "Календарь открывается в личном чате с ботом:", kb([[{ text: "📅 Открыть календарь", url: `https://t.me/${BOT()}?startapp` }]]));
+    if (cmd === "/app") return send(chat.id, "Календарь открывается в личном чате с ботом:", kb([[{ text: "📅 Открыть календарь", url: `https://t.me/${BOT()}?startapp=g${Math.abs(chat.id)}` }]]));
     if (cmd === "/activate") return activateGroup(m, g);
+    if (cmd === "/join") return send(chat.id, `✅ ${mention(m.from.id, displayName(m.from))}, вы в календаре группы.`);
+    if (cmd === "/mode") return setMode(m, g, arg);
+    if (cmd === "/team") return listTeam(chat.id);
+    if (cmd === "/notify") {
+      const on = /^(on|вкл|да)/i.test(arg.trim());
+      if (!(await isGroupAdmin(chat.id, m.from.id, g.sponsor_id))) return send(chat.id, "Только для администраторов группы.");
+      await db.from("groups").update({ notify_group: on }).eq("chat_id", chat.id);
+      return send(chat.id, on ? "Напоминания о записях буду дублировать в группу." : "Напоминания о записях буду присылать только в личные сообщения.");
+    }
     if (!g.active) return send(chat.id, "Календарь этой группы выключен: превышен лимит групп в тарифе. Владелец может нажать /activate после обновления тарифа.");
-    if (cmd === "/list" || cmd === "/today") { const { tz } = await planForOwner(chat.id); return listEvents(chat.id, chat.id, tz, cmd === "/today"); }
+    if (cmd === "/list" || cmd === "/today") { const { tz } = await planForOwner(chat.id); return listEvents(chat.id, chat.id, tz, cmd === "/today", g.mode === "team"); }
     if (cmd === "/ask") {
       const on = /^(on|вкл|да)/i.test(arg.trim());
       if (!arg.trim()) return send(chat.id, `Сейчас: ${g.ask_unclear ? "спрашиваю про сообщения с датой" : "реагирую только на слова-команды"}.\n/ask on или /ask off`);
       await db.from("groups").update({ ask_unclear: on }).eq("chat_id", chat.id);
       return send(chat.id, on ? "Буду спрашивать «добавить?» про сообщения, где вижу дату." : "Реагирую только на сообщения со словом-командой.");
     }
-    if (cmd === "/add") return handleText(m, arg, chat.id, true, (await planForOwner(chat.id)).tz, g);
+    if (cmd === "/add") return g.mode === "team" ? handleTeamText(m, arg, g) : handleText(m, arg, chat.id, true, (await planForOwner(chat.id)).tz, g);
     return;
   }
   if (!g.active) return;
+  if (g.mode === "team") return handleTeamText(m, text, g);
   const { tz } = await planForOwner(chat.id);
   return handleText(m, text, chat.id, true, tz, g);
 }
@@ -325,8 +352,11 @@ async function callback(q: Any) {
 }
 
 /* ------------------------------ списки ------------------------------ */
-async function listEvents(chat: number, owner: number, tz: string, todayOnly: boolean) {
-  const { data } = await db.from("events").select("*").eq("owner_id", owner).limit(500);
+async function listEvents(chat: number, owner: number, tz: string, todayOnly: boolean, byGroup = false) {
+  const base = db.from("events").select("*");
+  const { data } = await (byGroup ? base.eq("group_id", owner) : base.eq("owner_id", owner)).limit(500);
+  const names = new Map<number, string>();
+  if (byGroup) { const { data: mem } = await db.from("group_members").select("user_id,name,username").eq("chat_id", owner); for (const x of mem ?? []) names.set(x.user_id, x.name || (x.username ? "@" + x.username : "")); }
   const now = new Date();
   const l = localParts(now, tz);
   const from = todayOnly ? zonedToUtc(l.y, l.m, l.d, 0, 0, tz) : now;
@@ -336,7 +366,7 @@ async function listEvents(chat: number, owner: number, tz: string, todayOnly: bo
   if (!items.length) return send(chat, todayOnly ? "Сегодня событий нет 🌿" : "Ближайших событий нет. Добавьте: <code>добавь встреча завтра в 11:00</code>");
   const fmt = new Intl.DateTimeFormat("ru-RU", { timeZone: tz, day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
   const fmtD = new Intl.DateTimeFormat("ru-RU", { timeZone: tz, day: "numeric", month: "short" });
-  const rows = items.map((i) => `• ${i.ev.all_day ? fmtD.format(i.start) : fmt.format(i.start)} — ${esc(i.ev.title)}`);
+  const rows = items.map((i) => `• ${i.ev.all_day ? fmtD.format(i.start) : fmt.format(i.start)} — ${esc(i.ev.title)}${byGroup && names.get(i.ev.owner_id) ? ` (${esc(names.get(i.ev.owner_id)!)})` : ""}`);
   return send(chat, `<b>${todayOnly ? "Сегодня" : "Ближайшие события"}</b>\n${rows.join("\n")}`);
 }
 
@@ -350,19 +380,22 @@ async function plansScreen(chat: number, uid: number) {
     `<b>Free</b> — бесплатно\nдо ${lf.maxEvents} активных событий, 1 напоминание, 1 группа, 2 темы\n\n` +
     `<b>Plus</b> — ${PLANS.plus.stars.month}⭐/мес или ${PLANS.plus.stars.year}⭐/год\nбез лимита событий, повторы, до 3 напоминаний, все 8 тем, подписка для Apple/Google (ICS), 3 группы\n\n` +
     `<b>Pro</b> — ${PLANS.pro.stars.month}⭐/мес или ${PLANS.pro.stars.year}⭐/год\nвсё из Plus + синхронизация с Google Календарём, до 5 напоминаний, группы без лимита\n\n` +
+    `<b>Team</b> — ${PLANS.team.stars.month}⭐/мес или ${PLANS.team.stars.year}⭐/год\nвсё из Pro + командный режим для салонов: у каждого сотрудника своя вкладка, запись «на сотрудника» по @нику, админ видит всех, напоминания в группу\n\n` +
     `Месячная подписка продлевается сама, отмена в любой момент: Настройки Telegram → Мои звёзды → Подписки.`;
+  const [tm, ty] = await Promise.all([invoiceLink(uid, "team", "month"), invoiceLink(uid, "team", "year")]);
   const [pm, py, rm, ry] = await Promise.all([
     invoiceLink(uid, "plus", "month"), invoiceLink(uid, "plus", "year"), invoiceLink(uid, "pro", "month"), invoiceLink(uid, "pro", "year"),
   ]);
   const rows: { text: string; url: string }[][] = [];
   if (pm && py) rows.push([{ text: `Plus · ${PLANS.plus.stars.month}⭐/мес`, url: pm }, { text: `Plus · ${PLANS.plus.stars.year}⭐/год`, url: py }]);
   if (rm && ry) rows.push([{ text: `Pro · ${PLANS.pro.stars.month}⭐/мес`, url: rm }, { text: `Pro · ${PLANS.pro.stars.year}⭐/год`, url: ry }]);
+  if (tm && ty) rows.push([{ text: `Team · ${PLANS.team.stars.month}⭐/мес`, url: tm }, { text: `Team · ${PLANS.team.stars.year}⭐/год`, url: ty }]);
   return send(chat, text, rows.length ? kb(rows) : {});
 }
 
 async function preCheckout(q: Any) {
   const [plan, period, uid] = String(q.invoice_payload ?? "").split(":");
-  const ok = (plan === "plus" || plan === "pro") && (period === "month" || period === "year") && Number(uid) === q.from.id
+  const ok = (plan === "plus" || plan === "pro" || plan === "team") && (period === "month" || period === "year") && Number(uid) === q.from.id
     && q.total_amount === PLANS[plan].stars[period as Period] && q.currency === "XTR";
   await tg("answerPreCheckoutQuery", { pre_checkout_query_id: q.id, ok, ...(ok ? {} : { error_message: "Не удалось проверить заказ. Попробуйте открыть /plan заново." }) });
 }
@@ -418,10 +451,67 @@ async function importIcs(m: Any, user: Any) {
   for (const e of list) {
     const r = await saveEvent({
       owner_id: user.id, title: e.title, notes: e.notes, starts_at: e.starts_at.toISOString(), ends_at: e.ends_at?.toISOString() ?? null,
-      all_day: e.all_day, repeat: e.repeat, remind: e.all_day ? defaultRemind(true) : [30], created_by: user.id, source: "ics", tz: e.tz,
+      all_day: e.all_day, repeat: e.repeat, remind: null, created_by: user.id, source: "ics", tz: e.tz,
     });
     if (r.ok) ok++; else if (r.reason === "limit") { stopped = r.message; break; }
   }
   return send(chat, `📥 Импортировано событий: <b>${ok}</b> из ${list.length}.${stopped ? `\n🔒 ${esc(stopped)} Остальные не добавлены.` : ""}`,
     stopped ? kb([[{ text: "⭐ Тарифы", data: "plans" }]]) : {});
+}
+
+
+/* ------------------------------ командный режим (салон) ------------------------------ */
+async function setMode(m: Any, g: Any, arg: string) {
+  const chat = m.chat.id;
+  if (!(await isGroupAdmin(chat, m.from.id, g.sponsor_id))) return send(chat, "Менять режим могут администраторы группы.");
+  const want = arg.trim().toLowerCase();
+  if (want !== "team" && want !== "shared") return send(chat, `Сейчас: <b>${g.mode === "team" ? "команда (у каждого сотрудника свой календарь)" : "общий календарь"}</b>.\n/mode team или /mode shared`);
+  if (want === "team") {
+    const { plan } = await planForOwner(chat);
+    if (!limits(plan).team) return send(chat, "Командный режим входит в тариф <b>Team</b>. Тарифы: /plan в личном чате со мной (тариф действует по владельцу группы).", kb([[{ text: "⭐ Тарифы", url: `https://t.me/${BOT()}?start=plan` }]]));
+  }
+  await db.from("groups").update({ mode: want }).eq("chat_id", chat);
+  return send(chat, want === "team"
+    ? "✅ Командный режим включён.\nСотрудники: пусть каждый напишет в группе /join.\nЗапись: <code>запиши Анна маникюр завтра в 15:00 @мастер</code>\nБез @ника запись получит тот, кто написал."
+    : "✅ Общий календарь группы.");
+}
+async function listTeam(chat: number) {
+  const { data } = await db.from("group_members").select("user_id,name,username").eq("chat_id", chat).limit(100);
+  const rows = (data ?? []).map((x) => `• ${mention(x.user_id, x.name || "участник")}${x.username ? ` (@${x.username})` : ""}`);
+  return send(chat, rows.length ? `<b>Сотрудники в календаре</b>\n${rows.join("\n")}\n\nЕсли человека нет в списке — пусть напишет /join.` : "Пока никого. Пусть каждый напишет /join.");
+}
+
+async function handleTeamText(m: Any, text: string, g: Any) {
+  const chat = m.chat.id;
+  const { tz } = await planForOwner(chat);
+  const { cleaned, mentions } = extractMentions(text, m.entities ?? m.caption_entities, BOT());
+  const p = parseEvent(cleaned, tz);
+  const reply = (t: string, extra: Record<string, unknown> = {}) => send(chat, t, { reply_to_message_id: m.message_id, ...extra });
+  if (!p.trigger || !p.title) return;
+  if (!p.starts_at) return reply("Не нашёл дату. Пример: <code>запиши Анна маникюр завтра в 15:00 @мастер</code>");
+
+  let assignee = m.from.id as number, aName = displayName(m.from);
+  if (mentions.length) {
+    const mem = await findMember(chat, mentions[0]);
+    if (!mem) return reply(`Не знаю @${esc(mentions[0].username ?? "")} в этой группе. Пусть напишет здесь /join.`);
+    assignee = mem.user_id; aName = mem.name || (mem.username ? "@" + mem.username : "сотрудник");
+  }
+  if (assignee !== m.from.id && !(await isGroupAdmin(chat, m.from.id, g.sponsor_id)))
+    return reply("Записывать на других сотрудников могут только администраторы группы.");
+  await db.from("group_members").upsert({ chat_id: chat, user_id: assignee, ...(assignee === m.from.id ? { username: m.from.username ?? null, name: aName } : {}) }, { onConflict: "chat_id,user_id" });
+  await ensureUser(assignee);
+
+  const r = await saveEvent({ owner_id: assignee, group_id: chat, created_by: m.from.id, tz, source: "bot", title: p.title,
+    starts_at: p.starts_at.toISOString(), ends_at: p.ends_at?.toISOString() ?? null, all_day: p.all_day, repeat: p.repeat, remind: p.noRemind ? [] : p.remind });
+  if (!r.ok) return reply(`🔒 ${esc(r.message)}`);
+  const ev = r.ev;
+  const when = fmtWhen(new Date(ev.starts_at), tz, ev.all_day);
+  let note = "";
+  if (assignee !== m.from.id) {
+    const dm = await send(assignee, `📌 <b>Вам назначена запись</b>\n${esc(ev.title)}\n🗓 ${esc(when)}\n🔔 ${reminderText(ev.remind)}\n\nНазначил(а): ${esc(displayName(m.from))}\nГруппа: ${esc(m.chat.title ?? "")}`);
+    if (!dm.ok) note = `\nℹ️ ${esc(aName)} ещё не запускал(а) бота: личные уведомления не придут. Пусть откроет @${BOT()} и нажмёт /start.`;
+  }
+  for (const n of r.notes) note += `\nℹ️ ${esc(n)}`;
+  return reply(`✅ <b>Запись для ${mention(assignee, aName)}</b>\n📌 ${esc(ev.title)}\n🗓 ${esc(when)}${ev.repeat ? `\n🔁 ${REPEAT_RU[ev.repeat]}` : ""}\n🔔 ${reminderText(ev.remind)}${note}`,
+    kb([[{ text: "↩️ Отменить", data: `undo:${ev.id}` }]]));
 }

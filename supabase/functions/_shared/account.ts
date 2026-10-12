@@ -27,6 +27,9 @@ export async function deleteAccount(uid: number) {
     try { await fetch("https://oauth2.googleapis.com/revoke", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: `token=${encodeURIComponent(await decrypt(tok.refresh_enc))}` }); } catch { /* ignore */ }
   }
   await db.from("events").delete().eq("owner_id", uid);
+  await db.from("day_marks").delete().eq("user_id", uid);
+  await db.from("digest_log").delete().eq("user_id", uid);
+  await db.from("promo_redemptions").delete().eq("user_id", uid);
   await db.from("group_members").delete().eq("user_id", uid);
   await db.from("pending").delete().eq("user_id", uid);
   await db.from("google_tokens").delete().eq("user_id", uid);

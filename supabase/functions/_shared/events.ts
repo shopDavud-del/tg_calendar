@@ -2,7 +2,7 @@
 import { db } from "./db.ts";
 import { limits, planOf, type Plan } from "./plans.ts";
 import { reschedule, type Ev } from "./reminders.ts";
-import { defaultRemind } from "./parse.ts";
+import { remindDefaults, withDefaults } from "./settings.ts";
 import { pushGoogle, deleteGoogle } from "./google.ts";
 import type { User } from "./account.ts";
 
@@ -21,13 +21,15 @@ export async function planForOwner(ownerId: number): Promise<{ plan: Plan; user:
 export interface Input {
   id?: string; owner_id: number; title: string; notes?: string | null; starts_at: string; ends_at?: string | null;
   all_day: boolean; repeat?: string | null; remind?: number[] | null; created_by: number; source: string; tz: string;
+  group_id?: number | null;   // запись создана в группе-салоне (owner_id — кому назначена)
 }
-export type Result = { ok: true; ev: Ev; notes: string[] } | { ok: false; reason: "limit" | "invalid"; message: string };
+export type Result = { ok: true; ev: Ev; notes: string[] } | { ok: false; reason: "limit" | "invalid" | "team"; message: string };
 
 export async function saveEvent(inp: Input): Promise<Result> {
-  const { plan } = await planForOwner(inp.owner_id);
+  const { plan } = await planForOwner(inp.group_id ?? inp.owner_id);
   const lim = limits(plan);
   const notes: string[] = [];
+  if (inp.group_id && !lim.team) return { ok: false, reason: "team", message: "Командный режим доступен в тарифе Team." };
   const title = (inp.title ?? "").trim().slice(0, 200);
   if (!title || isNaN(Date.parse(inp.starts_at))) return { ok: false, reason: "invalid", message: "Нужны название и дата" };
 
@@ -39,14 +41,18 @@ export async function saveEvent(inp: Input): Promise<Result> {
   }
   let repeat = inp.repeat ?? null;
   if (repeat && !lim.repeat) { repeat = null; notes.push("Повторы доступны в тарифе Plus — событие добавлено без повтора."); }
-  let remind = (inp.remind && inp.remind.length ? inp.remind : defaultRemind(inp.all_day));
+  let remind: number[];
+  if (inp.remind == null) {   // null = взять из настроек владельца; [] = «без напоминания»
+    const st = inp.owner_id > 0 ? (await db.from("users").select("settings").eq("id", inp.owner_id).maybeSingle()).data?.settings : null;
+    remind = remindDefaults(withDefaults(st), inp.all_day);
+  } else remind = inp.remind;
   remind = [...new Set(remind)].slice(0, lim.maxReminders);
   if (inp.remind && inp.remind.length > lim.maxReminders) notes.push(`В вашем тарифе до ${lim.maxReminders} напоминаний на событие.`);
 
   const row = {
     owner_id: inp.owner_id, title, notes: inp.notes?.slice(0, 1000) ?? null, starts_at: inp.starts_at,
     ends_at: inp.ends_at ?? null, all_day: inp.all_day, tz: inp.tz, repeat, remind,
-    created_by: inp.created_by, source: inp.source, updated_at: new Date().toISOString(),
+    created_by: inp.created_by, source: inp.source, group_id: inp.group_id ?? null, updated_at: new Date().toISOString(),
   };
   const q = inp.id ? db.from("events").update(row).eq("id", inp.id).eq("owner_id", inp.owner_id) : db.from("events").insert(row);
   const { data, error } = await q.select().single();
