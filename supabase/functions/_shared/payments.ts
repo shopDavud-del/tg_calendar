@@ -2,23 +2,24 @@ import { tg } from "./tg.ts";
 import { PLANS, type Plan } from "./plans.ts";
 
 export type Period = "month" | "year";
+export const priceStars = (plan: Plan, period: Period, disc = 0) => Math.max(1, Math.round(PLANS[plan].stars[period] * (100 - disc) / 100));
 export const paidPlans: Plan[] = ["plus", "pro"];
 
 /** Ссылка на оплату в Stars. Месяц — настоящая подписка (автопродление раз в 30 дней), год — разовая оплата. */
-export async function invoiceLink(uid: number, plan: Plan, period: Period): Promise<string | null> {
+export async function invoiceLink(uid: number, plan: Plan, period: Period, disc = 0): Promise<string | null> {
   if (plan === "free") return null;
-  const stars = PLANS[plan].stars[period];
+  const stars = priceStars(plan, period, disc);
   const label = `${PLANS[plan].title} — ${period === "month" ? "30 дней" : "12 месяцев"}`;
   const body: Record<string, unknown> = {
     title: `Календарь ${PLANS[plan].title}`,
-    description: period === "month"
+    description: period === "month" && !disc
       ? `Подписка ${PLANS[plan].title}: продлевается каждые 30 дней, отменить можно в любой момент в Telegram.`
       : `${PLANS[plan].title} на 12 месяцев (разовая оплата, без автопродления).`,
-    payload: `${plan}:${period}:${uid}`,
+    payload: `${plan}:${period}:${uid}${disc ? ":d" + disc : ""}`,
     currency: "XTR",
     prices: [{ label, amount: stars }],
   };
-  if (period === "month") body.subscription_period = 2592000;
+  if (period === "month" && !disc) body.subscription_period = 2592000;   // со скидкой — разовая оплата без автопродления (цена подписки в Stars фиксируется навсегда)
   const j = await tg("createInvoiceLink", body);
   return j.ok ? (j.result as string) : null;
 }

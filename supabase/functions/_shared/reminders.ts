@@ -4,7 +4,7 @@ import { nextStart } from "./time.ts";
 export interface Ev {
   id: string; owner_id: number; title: string; notes?: string | null; starts_at: string; ends_at: string | null;
   all_day: boolean; tz: string; repeat: string | null; remind: number[]; created_by?: number | null;
-  source?: string; google_id?: string | null; group_id?: number | null;
+  source?: string; google_id?: string | null; group_id?: number | null; client_id?: string | null;
 }
 
 /** Планирует уведомления для ближайшего вхождения события. Безопасно вызывать много раз. */

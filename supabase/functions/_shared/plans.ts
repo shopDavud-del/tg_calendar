@@ -35,7 +35,8 @@ export const PLANS = {
   },
 } as const;
 
-export const TRIAL_DAYS = 7;         // пробный Pro для новых пользователей (0 — отключить)
+export const TRIAL_DAYS = 7;
+export const REFUND_WINDOW_DAYS = 3;   // возврат только за последнюю оплату и только в течение N дней         // пробный Pro для новых пользователей (0 — отключить)
 export const PERIOD_DAYS = { month: 30, year: 365 } as const;
 
 export function planOf(u: { plan: string; plan_until: string | null } | null): Plan {

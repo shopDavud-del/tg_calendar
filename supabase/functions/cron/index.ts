@@ -1,18 +1,24 @@
 // Запускается каждую минуту (pg_cron): уведомления, утренние/вечерние сводки, продление повторов, проверка активности
 import { db } from "../_shared/db.ts";
+import { asLang, fromTelegram, getLang, locale, withLang, type Lang } from "../_shared/i18n.ts";
 import { env } from "../_shared/env.ts";
 import { esc, kb, send } from "../_shared/tg.ts";
 import { schedule, type Ev } from "../_shared/reminders.ts";
 import { expand, fmtWhen, localParts, zonedToUtc } from "../_shared/time.ts";
 import { withDefaults } from "../_shared/settings.ts";
 import { mention } from "../_shared/groups.ts";
+import { draftLinks, draftText } from "../_shared/clients.ts";
 
 const KEEPALIVE_DAYS = 5;
+let lastTickWrite = 0;
 
 Deno.serve(async (req) => {
   if (req.headers.get("x-cron-secret") !== env("CRON_SECRET")) return new Response("forbidden", { status: 401 });
   const out: Record<string, unknown> = {};
-  await db.from("meta").upsert({ key: "last_tick", value: new Date().toISOString(), updated_at: new Date().toISOString() });
+  if (Date.now() - lastTickWrite > 120_000) {   // метка работы планировщика: раз в 2 минуты, а не каждую
+    lastTickWrite = Date.now();
+    await db.from("meta").upsert({ key: "last_tick", value: new Date().toISOString(), updated_at: new Date().toISOString() });
+  }
   try { out.sent = await fireReminders(); } catch (e) { console.error("reminders", e); }
   try { out.digests = await digests(); } catch (e) { console.error("digests", e); }
   try { await nextRepeats(); } catch (e) { console.error("repeats", e); }
@@ -22,12 +28,17 @@ Deno.serve(async (req) => {
 });
 
 const human = (m: number) => m % 1440 === 0 ? `${m / 1440} дн.` : m % 60 === 0 ? `${m / 60} ч` : `${m} мин`;
-const hm = (d: Date, tz: string) => new Intl.DateTimeFormat("ru-RU", { timeZone: tz, hour: "2-digit", minute: "2-digit" }).format(d);
+const hm = (d: Date, tz: string) => new Intl.DateTimeFormat(locale(), { timeZone: tz, hour: "2-digit", minute: "2-digit" }).format(d);
 
 async function fireReminders() {
   const { data: due } = await db.from("reminders").select("id,event_id,occurrence,offset_min,fire_at, events(*)")
     .eq("sent", false).lte("fire_at", new Date().toISOString()).order("fire_at").limit(200);
   let n = 0;
+  const uids = [...new Set((due ?? []).map((r) => (r as Any).events?.owner_id).filter((x: number) => x > 0))];
+  const gids = [...new Set((due ?? []).map((r) => (r as Any).events?.group_id).filter(Boolean))];
+  const ulang = new Map<number, Lang>(), glang = new Map<number, Lang>();
+  if (uids.length) for (const u of (await db.from("users").select("id,settings").in("id", uids)).data ?? []) ulang.set(u.id, asLang(u.settings?.lang));
+  if (gids.length) for (const g of (await db.from("groups").select("chat_id,lang").in("chat_id", gids)).data ?? []) glang.set(g.chat_id, asLang(g.lang));
   for (const r of due ?? []) {
     const { data: claimed } = await db.from("reminders").update({ sent: true }).eq("id", r.id).eq("sent", false).select("id");
     if (!claimed?.length) continue;
@@ -36,15 +47,29 @@ async function fireReminders() {
     if (!ev) continue;
     const occ = new Date(r.occurrence);
     const when = fmtWhen(occ, ev.tz, ev.all_day);
-    const lead = r.offset_min < 0 || ev.all_day ? "Сегодня" : r.offset_min === 0 ? "Сейчас" : `Через ${human(r.offset_min)}`;
+    const lead = r.offset_min >= 1_000_000 ? "Напоминание" : r.offset_min < 0 || ev.all_day ? "Сегодня" : r.offset_min === 0 ? "Сейчас" : `Через ${human(r.offset_min)}`;
+    const occMin = Math.floor(occ.getTime() / 60000);
+    const buttons = kb([[{ text: "✓ Готово", data: `dn:${ev.id}:${occMin}` }, { text: "⏰ +10 мин", data: `sz:${ev.id}:${occMin}:10` }, { text: "⏰ +1 час", data: `sz:${ev.id}:${occMin}:60` }]]);
     const body = `📌 ${esc(ev.title)}\n🗓 ${esc(when)}${ev.notes ? `\n\n${esc(ev.notes)}` : ""}`;
-    await send(ev.owner_id, `🔔 <b>${lead}</b>\n${body}`);   // личное сообщение (для группового календаря owner_id — это чат группы)
-    if (ev.group_id && ev.owner_id > 0) await notifyGroup(ev, lead, occ, when);
+    await withLang(ulang.get(ev.owner_id) ?? "ru", async () => {
+      await send(ev.owner_id, `🔔 <b>${lead}</b>\n${body}`, buttons);   // личное сообщение (для группового календаря owner_id — это чат группы)
+      if (!ev.group_id && ev.client_id && ev.owner_id > 0) await clientDraft(ev, ev.owner_id);
+    });
+    if (ev.group_id && ev.owner_id > 0) await withLang(glang.get(ev.group_id) ?? "ru", () => notifyGroup(ev, lead, occ, when));
     n++;
   }
   return n;
 }
 
+// deno-lint-ignore no-explicit-any
+type Any = any;
+/** Заготовка сообщения клиенту: бот писать клиенту первым не может, поэтому присылает текст и кнопки-ссылки человеку. */
+async function clientDraft(ev: Ev, chat: number) {
+  const { data: cl } = await db.from("clients").select("*").eq("id", ev.client_id!).maybeSingle();
+  if (!cl) return;
+  const text = draftText(ev, cl, ev.tz), links = draftLinks(cl, text);
+  await send(chat, `📨 <b>Заготовка сообщения клиенту</b>\n<code>${esc(text)}</code>`, links.length ? kb(links.map((l) => [l])) : {});
+}
 /** Салон: дублируем напоминание в группу, отмечая сотрудника и администратора. */
 async function notifyGroup(ev: Ev, lead: string, occ: Date, when: string) {
   const { data: g } = await db.from("groups").select("notify_group,sponsor_id,active").eq("chat_id", ev.group_id!).maybeSingle();
@@ -55,6 +80,7 @@ async function notifyGroup(ev: Ev, lead: string, occ: Date, when: string) {
   void occ;
   const adm = g.sponsor_id && g.sponsor_id !== ev.owner_id ? `\n👤 Админ: ${mention(g.sponsor_id, nm(g.sponsor_id))}` : "";
   await send(ev.group_id!, `🔔 <b>${lead}</b> · запись у ${mention(ev.owner_id, nm(ev.owner_id))}\n📌 ${esc(ev.title)}\n🗓 ${esc(when)}${adm}`);
+  if (ev.client_id) await clientDraft(ev, ev.group_id!);   // администратор отправляет клиенту вручную одним нажатием
 }
 
 /** Утром — задачи на день, вечером — план на завтра (по часовому поясу и настройкам человека). */
@@ -85,7 +111,7 @@ async function digests() {
       if (items.length < st.digest_min) continue;
       const lines = items.slice(0, 20).map((i) => `• ${i.ev.all_day ? "весь день" : hm(i.start, u.tz)} — ${esc(i.ev.title)}`);
       const head = kind === "morning" ? `☀️ <b>План на сегодня</b> · ${items.length}` : `🌙 <b>Завтра</b> · ${fmtWhen(from, u.tz, true).replace(", весь день", "")} · ${items.length}`;
-      await send(u.id, `${head}\n${lines.join("\n")}${items.length > 20 ? `\n…и ещё ${items.length - 20}` : ""}`, kb([[{ text: "📅 Открыть календарь", web_app: env("APP_URL") }]]));
+      await withLang(asLang(st.lang), () => send(u.id, `${head}\n${lines.join("\n")}${items.length > 20 ? `\n…и ещё ${items.length - 20}` : ""}`, kb([[{ text: "📅 Открыть календарь", web_app: env("APP_URL") }]])));
       sent++;
     }
   }

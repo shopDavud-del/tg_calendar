@@ -12,7 +12,8 @@ export const TRIGGER_WORDS = [
 const STEMS = ["добав", "запомн", "назнач", "запиш", "запис", "созда", "постав", "внес", "занес", "отмет",
   "запланир", "закин", "напомн", "зафиксир", "сохран", "забронир", "оформ", "встав", "помет",
   "не забудь", "организ", "планир", "закреп"];
-const TRIGGER_RE = new RegExp(`^\\s*(?:/add(?:@\\w+)?\\s*|(?:${STEMS.join("|")})[а-яё]*[\\s,:–-]*)`, "i");
+const EN_WORDS = ["add", "remind", "schedule", "book", "create", "save", "set", "note", "plan", "appointment", "remember"];
+const TRIGGER_RE = new RegExp(`^\\s*(?:/add(?:@\\w+)?\\s*|(?:${STEMS.join("|")})[а-яё]*[\\s,:–-]*|(?:${EN_WORDS.join("|")})\\b[\\s,:–-]*)`, "i");
 
 const REPEAT_RULES: [RegExp, string][] = [
   [/(?:каждый\s+день|ежедневно|каждые\s+сутки)/i, "daily"],
@@ -32,6 +33,9 @@ const UNIT_MIN: [RegExp, number][] = [
 const REMIND_RE = /(?:(?:и\s+)?напомни(?:ть)?\s+)?за\s+(?:(\d+)\s*(мин[а-яё]*|час[а-яё]*|ч(?![а-яё])|дн[а-яё]*|день|сут[а-яё]*|недел[а-яё]*)|(полчаса|час|день|сутки|неделю)(?![а-яё]))/i;
 // «через 2 часа», «через полчаса» — считаем сами (chrono неверно сочетает это с часовыми поясами)
 const IN_RE = /через\s+(?:(\d+)\s*(мин[а-яё]*|час[а-яё]*|ч(?![а-яё])|дн[а-яё]*|день|сут[а-яё]*|недел[а-яё]*)|(полчаса|час|день|неделю)(?![а-яё]))/i;
+
+/** Быстрая проверка без разбора: начинается ли сообщение со слова-команды (чтобы не нагружать базу на обычной болтовне в группе). */
+export const looksLikeTrigger = (t: string) => TRIGGER_RE.test(t.replace(/@\w+bot\b/gi, "").trim());
 
 export interface Parsed {
   trigger: boolean;
@@ -90,8 +94,12 @@ export function parseEvent(raw: string, tz: string, now = new Date()): Parsed {
   // дата и время
   if (!starts) {
     const off = tzOffsetMin(now, tz);
-    const results = chrono.ru.parse(t, { instant: now, timezone: off }, { forwardDate: true })
-      .filter((r) => !/^(день|дня|дни|дней|ночь|утро|вечер)$/i.test(r.text.trim()));
+    const bad = (r: { text: string }) => /^(день|дня|дни|дней|ночь|утро|вечер)$/i.test(r.text.trim());
+    const opts = { forwardDate: true };
+    const ru = chrono.ru.parse(t, { instant: now, timezone: off }, opts).filter((r) => !bad(r));
+    const en = chrono.en.parse(t, { instant: now, timezone: off }, opts);
+    const best = (a: { text: string }[]) => a.reduce((m, r) => Math.max(m, r.text.length), 0);
+    const results = best(en) > best(ru) ? en : ru;   // берём разбор, который «съел» больше текста (русский или английский)
     results.sort((a, b) => b.text.length - a.text.length);
     const r = results[0];
     if (r) {
@@ -110,7 +118,7 @@ export function parseEvent(raw: string, tz: string, now = new Date()): Parsed {
   }
 
   let title = t.replace(/\s+/g, " ").replace(/^[\s,.:;–—-]+|[\s,.:;–—-]+$/g, "")
-    .replace(/^(?:на|в|во|о|про|что)\s+/i, "").replace(/\s+(?:в|на|во|к|с|до)$/i, "").trim();
+    .replace(/^(?:на|в|во|о|про|что)\s+/i, "").replace(/\s+(?:в|на|во|к|с|до|on|at|in|for|to)$/i, "").trim();
   if (title) title = title[0].toUpperCase() + title.slice(1);
   return { trigger, title: title || null, starts_at: starts, ends_at: ends, all_day: allDay, repeat, remind, noRemind };
 }

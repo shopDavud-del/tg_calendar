@@ -1,4 +1,5 @@
 // Работа с часовыми поясами и повторами без внешних библиотек.
+import { getLang, LOCALE } from "./i18n.ts";
 export function localParts(d: Date, tz: string) {
   const f = new Intl.DateTimeFormat("en-CA", {
     timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
@@ -80,8 +81,8 @@ export function expand(ev: Ev, from: Date, to: Date) {
 }
 
 export function fmtWhen(d: Date, tz: string, allDay: boolean) {
-  const date = new Intl.DateTimeFormat("ru-RU", { timeZone: tz, weekday: "short", day: "numeric", month: "long" }).format(d);
+  const date = new Intl.DateTimeFormat(LOCALE[getLang()], { timeZone: tz, weekday: "short", day: "numeric", month: "long" }).format(d);
   if (allDay) return `${date}, весь день`;
-  const t = new Intl.DateTimeFormat("ru-RU", { timeZone: tz, hour: "2-digit", minute: "2-digit" }).format(d);
+  const t = new Intl.DateTimeFormat(LOCALE[getLang()], { timeZone: tz, hour: "2-digit", minute: "2-digit" }).format(d);
   return `${date}, ${t}`;
 }

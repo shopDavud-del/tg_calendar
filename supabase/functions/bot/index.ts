@@ -1,9 +1,10 @@
 // Telegram-бот: личные чаты, группы, оплата Stars, импорт .ics
 import { db } from "../_shared/db.ts";
+import { asLang, fromTelegram, getLang, locale, withLang, type Lang } from "../_shared/i18n.ts";
 import { env } from "../_shared/env.ts";
 import { answerCb, edit, esc, kb, send, tg } from "../_shared/tg.ts";
 import { ensureUser, deleteAccount } from "../_shared/account.ts";
-import { parseEvent, TRIGGER_WORDS } from "../_shared/parse.ts";
+import { looksLikeTrigger, parseEvent, TRIGGER_WORDS } from "../_shared/parse.ts";
 import { expand, fmtWhen, localParts, validTz, zonedToUtc } from "../_shared/time.ts";
 import { limits, PERIOD_DAYS, PLANS, planOf, TRIAL_DAYS } from "../_shared/plans.ts";
 import { planForOwner, removeEvent, saveEvent, type Input } from "../_shared/events.ts";
@@ -13,6 +14,11 @@ import { defaultRemind } from "../_shared/parse.ts";
 import type { Ev } from "../_shared/reminders.ts";
 import { displayName, extractMentions, findMember, isGroupAdmin, mention } from "../_shared/groups.ts";
 import { createCodes, redeem } from "../_shared/promo.ts";
+import { clientCardText, draftLinks, draftText, extractPhone, upsertClient } from "../_shared/clients.ts";
+import { LANG_NAMES, LANGS } from "../_shared/i18n.ts";
+import { priceStars } from "../_shared/payments.ts";
+import { REFUND_WINDOW_DAYS } from "../_shared/plans.ts";
+import { effectivePlan } from "../_shared/groups.ts";
 
 const BOT = () => env("BOT_USERNAME");
 const ADMIN = () => Number(env("ADMIN_ID"));
@@ -27,7 +33,24 @@ Deno.serve(async (req) => {
 // deno-lint-ignore no-explicit-any
 type Any = any;
 
+const ucache = new Map<number, { lang: Lang; t: number }>();
+async function userLang(uid: number, code?: string): Promise<Lang> {
+  const c = ucache.get(uid);
+  if (c && Date.now() - c.t < 300_000) return c.lang;
+  const { data } = await db.from("users").select("settings").eq("id", uid).maybeSingle();
+  const l = data?.settings?.lang ? asLang(data.settings.lang) : fromTelegram(code);
+  ucache.set(uid, { lang: l, t: Date.now() });
+  return l;
+}
 async function route(u: Any) {
+  const from = u.message?.from ?? u.callback_query?.from ?? u.pre_checkout_query?.from ?? u.my_chat_member?.from;
+  const chat = u.message?.chat ?? u.callback_query?.message?.chat ?? u.my_chat_member?.chat;
+  let lang: Lang = "ru";
+  if (chat && (chat.type === "group" || chat.type === "supergroup")) lang = asLang((await getGroup(chat.id))?.lang);
+  else if (from) lang = await userLang(from.id, from.language_code);
+  return withLang(lang, () => dispatch(u));
+}
+async function dispatch(u: Any) {
   if (u.pre_checkout_query) return preCheckout(u.pre_checkout_query);
   if (u.callback_query) return callback(u.callback_query);
   if (u.my_chat_member) return myChatMember(u.my_chat_member);
@@ -81,6 +104,15 @@ const GROUP_HELP = `<b>Календарь группы</b>
 
 /* ------------------------------ сообщения ------------------------------ */
 const seen = new Set<string>();
+// Кэш настроек группы на 30 секунд: бот получает каждое сообщение группы и не должен каждый раз читать базу
+const gcache = new Map<number, { g: Any; t: number }>();
+async function getGroup(chatId: number) {
+  const c = gcache.get(chatId);
+  if (c && Date.now() - c.t < 30_000) return c.g;
+  const { data } = await db.from("groups").select("*").eq("chat_id", chatId).maybeSingle();
+  if (data) gcache.set(chatId, { g: data, t: Date.now() });
+  return data;
+}
 
 async function message(m: Any) {
   if (m.from?.is_bot) return;
@@ -110,6 +142,7 @@ async function privateCommand(m: Any, cmd: string, arg: string, user: Any) {
   switch (cmd) {
     case "/start": {
       if (arg.trim() === "plan") return plansScreen(chat, user.id);
+      if (/^ref_\d+$/.test(arg.trim())) await applyReferral(user, Number(arg.trim().slice(4)));
       const fresh = Date.now() - new Date(user.created_at).getTime() < 120_000;
       const trial = fresh && TRIAL_DAYS > 0 && planOf(user) === "pro";
       await send(chat, `<b>Календарь в Telegram</b>\nПишите события обычными словами, я запомню и напомню вовремя.\n\n${trial ? `🎁 Вам открыт Pro на ${TRIAL_DAYS} дней.\n\n` : ""}Попробуйте прямо сейчас:\n<code>добавь стоматолог завтра в 15:00</code>`,
@@ -127,13 +160,21 @@ async function privateCommand(m: Any, cmd: string, arg: string, user: Any) {
     }
     case "/today": case "/list": return listEvents(chat, user.id, user.tz, cmd === "/today");
     case "/plan": return plansScreen(chat, user.id);
+    case "/ref": return refInfo(chat, user.id);
+    case "/lang": return send(chat, "🌐 Язык / Language", kb([LANGS.slice(0, 3).map((l) => ({ text: LANG_NAMES[l], data: `lg:${l}` })), LANGS.slice(3).map((l) => ({ text: LANG_NAMES[l], data: `lg:${l}` }))]));
+    case "/client": case "/note": case "/name": return clientCmd(m, cmd, arg, user.id, user.tz);
     case "/code": case "/redeem": {
       if (!arg.trim()) return send(chat, "Отправьте код так: <code>/code CAL-XXXX-XXXX</code>");
       const r = await redeem(user.id, arg);
-      return send(chat, r.ok ? `🎁 Код принят! Тариф <b>${PLANS[r.plan].title}</b> активен до ${new Date(r.until).toLocaleDateString("ru-RU", { timeZone: user.tz })}.` : `❌ ${esc(r.message)}`);
+      return send(chat, r.ok ? `🎁 Код принят! Тариф <b>${PLANS[r.plan].title}</b> активен до ${new Date(r.until).toLocaleDateString(locale(), { timeZone: user.tz })}.` : `❌ ${esc(r.message)}`);
     }
     case "/terms": return send(chat, "<b>Условия</b>\nТарифы Plus и Pro оплачиваются в Telegram Stars. Месячная подписка продлевается каждые 30 дней; отменить можно в любой момент: Настройки Telegram → Мои звёзды → Подписки. Оплаченный период сохраняется до конца. Возврат — по запросу через /paysupport.\nМы храним только ваш Telegram ID, часовой пояс, настройки и события.");
-    case "/paysupport": return send(chat, `По оплате и возвратам напишите администратору: <a href="tg://user?id=${ADMIN()}">связаться</a>. Укажите, что и когда оплачивали.`);
+    case "/paysupport": {
+      const { data: last } = await db.from("payments").select("charge_id,stars,plan,created_at,refunded").eq("user_id", user.id).eq("refunded", false).order("created_at", { ascending: false }).limit(1).maybeSingle();
+      const okWin = last && Date.now() - new Date(last.created_at).getTime() < REFUND_WINDOW_DAYS * 86400000;
+      return send(chat, `<b>Оплата и возвраты</b>\nВозврат возможен только за <b>последнюю</b> оплату и только в течение ${REFUND_WINDOW_DAYS} дней после неё. Уже использованные периоды не возвращаются. После возврата тариф отключается сразу.\n\nДругие вопросы: <a href="tg://user?id=${ADMIN()}">написать администратору</a>.`,
+        okWin ? kb([[{ text: `Запросить возврат (${last!.stars}⭐)`, data: `rq:${last!.charge_id}` }]]) : {});
+    }
     case "/export": return exportData(chat, user.id);
     case "/delete":
       return send(chat, "⚠️ Удалить <b>все</b> ваши события и настройки, отключить Google? Это нельзя отменить.", kb([[{ text: "Да, удалить всё", data: "del:yes" }, { text: "Отмена", data: "del:no" }]]));
@@ -170,19 +211,15 @@ async function adminCommand(m: Any, cmd: string, arg: string) {
     return send(chat, `Готово: ${id} → ${plan} на ${days} дн.`);
   }
   if (cmd === "/refund") {  // /refund <user_id> <charge_id>
-    const j = await tg("refundStarPayment", { user_id: Number(a[0]), telegram_payment_charge_id: a[1] });
-    if (j.ok) {
-      await db.from("payments").update({ refunded: true }).eq("charge_id", a[1]);
-      await db.from("users").update({ plan: "free", plan_until: null }).eq("id", Number(a[0]));
-    }
-    return send(chat, j.ok ? "Возврат выполнен, тариф снят." : `Ошибка: ${esc(JSON.stringify(j))}`);
+    const res = await doRefund(Number(a[0]), a[1]);
+    return send(chat, res.ok ? "Возврат выполнен, тариф снят." : `Ошибка: ${esc(res.error ?? "")}`);
   }
 }
 
 /* ------------------------------ группы ------------------------------ */
 async function groupMessage(m: Any, text: string) {
   const chat = m.chat;
-  let { data: g } = await db.from("groups").select("*").eq("chat_id", chat.id).maybeSingle();
+  let g = await getGroup(chat.id);
   if (!g) g = await joinGroup(chat, m.from.id, false);
   if (!g) return;
 
@@ -203,13 +240,15 @@ async function groupMessage(m: Any, text: string) {
     if (cmd === "/words") return send(chat.id, WORDS);
     if (cmd === "/app") return send(chat.id, "Календарь открывается в личном чате с ботом:", kb([[{ text: "📅 Открыть календарь", url: `https://t.me/${BOT()}?startapp=g${Math.abs(chat.id)}` }]]));
     if (cmd === "/activate") return activateGroup(m, g);
+    if (cmd === "/lang") { if (!(await isGroupAdmin(chat.id, m.from.id, g.sponsor_id))) return send(chat.id, "Только для администраторов группы."); return send(chat.id, "🌐 Язык группы / Group language", kb([LANGS.slice(0, 3).map((l) => ({ text: LANG_NAMES[l], data: `lg:${l}` })), LANGS.slice(3).map((l) => ({ text: LANG_NAMES[l], data: `lg:${l}` }))])); }
+    if (cmd === "/client" || cmd === "/note" || cmd === "/name") return clientCmd(m, cmd, arg, chat.id, (await planForOwner(chat.id)).tz);
     if (cmd === "/join") return send(chat.id, `✅ ${mention(m.from.id, displayName(m.from))}, вы в календаре группы.`);
     if (cmd === "/mode") return setMode(m, g, arg);
     if (cmd === "/team") return listTeam(chat.id);
     if (cmd === "/notify") {
       const on = /^(on|вкл|да)/i.test(arg.trim());
       if (!(await isGroupAdmin(chat.id, m.from.id, g.sponsor_id))) return send(chat.id, "Только для администраторов группы.");
-      await db.from("groups").update({ notify_group: on }).eq("chat_id", chat.id);
+      await db.from("groups").update({ notify_group: on }).eq("chat_id", chat.id); gcache.delete(chat.id);
       return send(chat.id, on ? "Напоминания о записях буду дублировать в группу." : "Напоминания о записях буду присылать только в личные сообщения.");
     }
     if (!g.active) return send(chat.id, "Календарь этой группы выключен: превышен лимит групп в тарифе. Владелец может нажать /activate после обновления тарифа.");
@@ -217,13 +256,15 @@ async function groupMessage(m: Any, text: string) {
     if (cmd === "/ask") {
       const on = /^(on|вкл|да)/i.test(arg.trim());
       if (!arg.trim()) return send(chat.id, `Сейчас: ${g.ask_unclear ? "спрашиваю про сообщения с датой" : "реагирую только на слова-команды"}.\n/ask on или /ask off`);
-      await db.from("groups").update({ ask_unclear: on }).eq("chat_id", chat.id);
+      await db.from("groups").update({ ask_unclear: on }).eq("chat_id", chat.id); gcache.delete(chat.id);
       return send(chat.id, on ? "Буду спрашивать «добавить?» про сообщения, где вижу дату." : "Реагирую только на сообщения со словом-командой.");
     }
     if (cmd === "/add") return g.mode === "team" ? handleTeamText(m, arg, g) : handleText(m, arg, chat.id, true, (await planForOwner(chat.id)).tz, g);
     return;
   }
   if (!g.active) return;
+  // обычное сообщение без слова-команды (и без режима «спрашивать») — выходим до любых запросов к базе
+  if (!looksLikeTrigger(text) && !(g.mode !== "team" && g.ask_unclear)) return;
   if (g.mode === "team") return handleTeamText(m, text, g);
   const { tz } = await planForOwner(chat.id);
   return handleText(m, text, chat.id, true, tz, g);
@@ -245,7 +286,7 @@ async function activateGroup(m: Any, g: Any) {
   const user = await ensureUser(g.sponsor_id);
   const { count } = await db.from("groups").select("chat_id", { count: "exact", head: true }).eq("sponsor_id", g.sponsor_id).eq("active", true).neq("chat_id", g.chat_id);
   if ((count ?? 0) >= limits(planOf(user)).maxGroups) return send(m.chat.id, "Лимит групп в вашем тарифе исчерпан. Тарифы — /plan в личном чате со мной.");
-  await db.from("groups").update({ active: true }).eq("chat_id", g.chat_id);
+  await db.from("groups").update({ active: true }).eq("chat_id", g.chat_id); gcache.delete(g.chat_id);
   return send(m.chat.id, "✅ Календарь группы включён.");
 }
 async function myChatMember(c: Any) {
@@ -259,26 +300,40 @@ async function myChatMember(c: Any) {
 /* ------------------------------ разбор текста ------------------------------ */
 async function handleText(m: Any, text: string, owner: number, isGroup: boolean, tz: string, group?: Any) {
   const chat = m.chat.id;
-  const p = parseEvent(text, tz);
+  const ex = text === m.text ? extractMentions(text, m.entities, BOT()) : { cleaned: text, mentions: [] as { username?: string }[] };
+  const ph = extractPhone(ex.cleaned);
+  const uname = ex.mentions.find((x) => x.username)?.username ?? null;
+  const p = parseEvent(ph.cleaned, tz);
   const reply = (t: string, extra: Record<string, unknown> = {}) => send(chat, t, { reply_to_message_id: m.message_id, ...extra });
+  const withClient = async () => (ph.phone || uname) && p.title ? { client_id: (await upsertClient(owner, { phone: ph.phone, username: uname }))?.id ?? null } : {};
   const base = { owner_id: owner, created_by: m.from.id, tz, source: "bot" };
 
   if (p.trigger && p.title && p.starts_at) {
-    return createFromParsed(chat, m.message_id, { ...base, title: p.title, starts_at: p.starts_at.toISOString(), ends_at: p.ends_at?.toISOString() ?? null, all_day: p.all_day, repeat: p.repeat, remind: p.noRemind ? [] : p.remind });
+    return createFromParsed(chat, m.message_id, { ...base, ...(await withClient()), title: p.title, starts_at: p.starts_at.toISOString(), ends_at: p.ends_at?.toISOString() ?? null, all_day: p.all_day, repeat: p.repeat, remind: p.noRemind ? [] : p.remind });
   }
   const todayStart = () => { const l = localParts(new Date(), tz); return zonedToUtc(l.y, l.m, l.d, 0, 0, tz); };
 
   if (p.trigger && p.title && !p.starts_at) {
     if (!isGroup) return reply("Не нашёл дату. Напишите, когда, например:\n<code>добавь " + esc(p.title.toLowerCase()) + " завтра в 15:00</code>");
-    return askYesNo(chat, m, { ...base, title: p.title, starts_at: todayStart().toISOString(), all_day: true, repeat: p.repeat, remind: p.remind },
+    return askYesNo(chat, m, { ...base, ...(await withClient()), title: p.title, starts_at: todayStart().toISOString(), all_day: true, repeat: p.repeat, remind: p.remind },
       `Не нашёл дату. Добавить «<b>${esc(p.title)}</b>» на сегодня (весь день)?`);
   }
   if (!p.trigger && p.title && p.starts_at && (!isGroup || group?.ask_unclear)) {
     const when = fmtWhen(p.starts_at, tz, p.all_day);
-    return askYesNo(chat, m, { ...base, title: p.title, starts_at: p.starts_at.toISOString(), ends_at: p.ends_at?.toISOString() ?? null, all_day: p.all_day, repeat: p.repeat, remind: p.noRemind ? [] : p.remind },
+    return askYesNo(chat, m, { ...base, ...(await withClient()), title: p.title, starts_at: p.starts_at.toISOString(), ends_at: p.ends_at?.toISOString() ?? null, all_day: p.all_day, repeat: p.repeat, remind: p.noRemind ? [] : p.remind },
       `Это событие? Добавить в календарь?\n📌 <b>${esc(p.title)}</b>\n🗓 ${esc(when)}`);
   }
   if (!isGroup) return reply("Не понял 🤔 Начните со слова-команды и укажите дату:\n<code>добавь встреча завтра в 11:00</code>\n\nПодробнее: /help");
+}
+
+async function askConflict(chat: number, replyTo: number | null, editMsg: number | undefined, payload: Record<string, unknown>, cf: { title: string; start: string; end: string }[], tz: string) {
+  const { data } = await db.from("pending").insert({ chat_id: chat, user_id: Number(payload.created_by), payload }).select("id").single();
+  if (!data) return;
+  const t = (iso: string) => new Intl.DateTimeFormat(locale(), { timeZone: tz, day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(iso));
+  const list = cf.slice(0, 3).map((c) => `• ${esc(c.title)} (${t(c.start)}–${new Intl.DateTimeFormat(locale(), { timeZone: tz, hour: "2-digit", minute: "2-digit" }).format(new Date(c.end))})`).join("\n");
+  const text = `⚠️ <b>Это время уже занято</b>\n${list}\n\nЗаписать всё равно?`;
+  const extra = kb([[{ text: "✅ Да, записать", data: `y:${data.id}` }, { text: "✖️ Нет", data: `n:${data.id}` }]]);
+  return editMsg ? edit(chat, editMsg, text, extra) : send(chat, text, { reply_to_message_id: replyTo ?? undefined, ...extra });
 }
 
 async function askYesNo(chat: number, m: Any, payload: Record<string, unknown>, text: string) {
@@ -290,6 +345,7 @@ async function askYesNo(chat: number, m: Any, payload: Record<string, unknown>, 
 async function createFromParsed(chat: number, replyTo: number | null, inp: Omit<Input, "remind"> & { remind?: number[] | null }, editMsg?: number) {
   const r = await saveEvent({ ...inp, remind: inp.remind ?? null } as Input);
   const isPrivate = inp.owner_id > 0;
+  if (!r.ok && r.reason === "conflict") return askConflict(chat, replyTo, editMsg, { ...inp, force: true }, r.conflicts ?? [], inp.tz);
   if (!r.ok) {
     const txt = r.reason === "limit" ? `🔒 ${esc(r.message)}\nЧтобы снять ограничение, выберите тариф.` : `Не получилось: ${esc(r.message)}`;
     const extra = r.reason === "limit"
@@ -299,13 +355,16 @@ async function createFromParsed(chat: number, replyTo: number | null, inp: Omit<
   const ev = r.ev;
   const lines = [
     `✅ <b>Добавлено</b>`, `📌 ${esc(ev.title)}`,
-    `🗓 ${esc(fmtWhen(new Date(ev.starts_at), ev.tz, ev.all_day))}${ev.ends_at && !ev.all_day ? ` – ${new Intl.DateTimeFormat("ru-RU", { timeZone: ev.tz, hour: "2-digit", minute: "2-digit" }).format(new Date(ev.ends_at))}` : ""}`,
+    `🗓 ${esc(fmtWhen(new Date(ev.starts_at), ev.tz, ev.all_day))}${ev.ends_at && !ev.all_day ? ` – ${new Intl.DateTimeFormat(locale(), { timeZone: ev.tz, hour: "2-digit", minute: "2-digit" }).format(new Date(ev.ends_at))}` : ""}`,
   ];
   if (ev.repeat) lines.push(`🔁 ${REPEAT_RU[ev.repeat]}`);
   lines.push(`🔔 ${reminderText(ev.remind)}`);
   for (const n of r.notes) lines.push(`ℹ️ ${esc(n)}`);
-  const rows = [[{ text: "↩️ Отменить", data: `undo:${ev.id}` }]];
-  if (isPrivate) rows[0].push({ text: "📅 Календарь", web_app: env("APP_URL") } as never);
+  const cl = ev.client_id ? (await db.from("clients").select("*").eq("id", ev.client_id).maybeSingle()).data : null;
+  if (cl) lines.push(`👤 ${esc([cl.name, cl.phone, cl.username ? "@" + cl.username : ""].filter(Boolean).join(" · ") || "Клиент")}`);
+  const rows = [[{ text: "↩️ Отменить", data: `undo:${ev.id}` }]] as { text: string; data?: string; web_app?: string }[][];
+  if (cl) rows.push([{ text: "📨 Заготовка клиенту", data: `cd:${ev.id}` }]);
+  if (isPrivate) rows[0].push({ text: "📅 Календарь", web_app: env("APP_URL") });
   const extra = kb(rows as never);
   return editMsg ? edit(chat, editMsg, lines.join("\n"), extra) : send(chat, lines.join("\n"), { reply_to_message_id: replyTo ?? undefined, ...extra });
 }
@@ -324,6 +383,7 @@ async function callback(q: Any) {
     await db.from("pending").delete().eq("id", id);
     await answerCb(q.id);
     if (data[0] === "n") return edit(chat, mid, "Хорошо, не добавляю.");
+    if (p.payload.group_id) return commitTeam(chat, null, p.payload, p.payload.meta ?? {}, mid);
     return createFromParsed(chat, null, p.payload, mid);
   }
   if (data.startsWith("undo:")) {
@@ -335,7 +395,60 @@ async function callback(q: Any) {
     await answerCb(q.id, "Отменено");
     return edit(chat, mid, "↩️ Событие отменено.");
   }
+  if (data.startsWith("dn:") || data.startsWith("sz:")) {
+    const [kind, id, occS, minS] = data.split(":");
+    const { data: ev } = await db.from("events").select("id,owner_id,created_by,tz,title").eq("id", id).maybeSingle();
+    if (!ev) { await answerCb(q.id, "Событие уже удалено"); return edit(chat, mid, "Событие удалено."); }
+    if (ev.owner_id !== q.from.id && ev.created_by !== q.from.id && !(ev.owner_id < 0)) return answerCb(q.id, "Это не ваше событие", true);
+    const occ = new Date(Number(occS) * 60000);
+    if (kind === "dn") {
+      const lp = localParts(occ, ev.tz);
+      await db.from("event_done").upsert({ event_id: id, day: `${lp.y}-${String(lp.m).padStart(2, "0")}-${String(lp.d).padStart(2, "0")}` });
+      await answerCb(q.id, "Отмечено ✓");
+      return edit(chat, mid, `✅ <s>${esc(ev.title)}</s>\nВыполнено`);
+    }
+    const mins = Math.max(1, Math.min(1440, Number(minS) || 10));
+    await db.from("reminders").insert({ event_id: id, occurrence: occ.toISOString(), offset_min: 1_000_000 + (Math.floor(Date.now() / 60000) % 900_000), fire_at: new Date(Date.now() + mins * 60000).toISOString() });
+    await answerCb(q.id, `Напомню через ${mins >= 60 ? mins / 60 + " ч" : mins + " мин"}`);
+    return edit(chat, mid, `⏰ Отложено на ${mins >= 60 ? mins / 60 + " ч" : mins + " мин"}\n📌 ${esc(ev.title)}`);
+  }
+  if (data.startsWith("rq:")) return refundRequest(q, data.slice(3));
+  if (data.startsWith("rfa:") || data.startsWith("rfd:")) {
+    if (q.from.id !== ADMIN()) return answerCb(q.id, "Только для владельца", true);
+    const id = data.slice(4);
+    const { data: rr } = await db.from("refund_requests").select("*").eq("id", id).maybeSingle();
+    if (!rr || rr.status !== "new") { await answerCb(q.id, "Уже обработано"); return; }
+    if (data.startsWith("rfd:")) {
+      await db.from("refund_requests").update({ status: "denied" }).eq("id", id);
+      await send(rr.user_id, "К сожалению, возврат по этой оплате не одобрен. Если есть вопросы — /paysupport.");
+      await answerCb(q.id, "Отклонено"); return edit(chat, mid, `Заявка отклонена (#${rr.user_id})`);
+    }
+    const res = await doRefund(rr.user_id, rr.charge_id);
+    await db.from("refund_requests").update({ status: res.ok ? "approved" : "new" }).eq("id", id);
+    await answerCb(q.id, res.ok ? "Возврат выполнен" : "Не удалось", !res.ok);
+    return edit(chat, mid, res.ok ? `✅ Возврат выполнен · user ${rr.user_id}` : `Ошибка возврата: ${esc(res.error ?? "")}`);
+  }
   if (data === "plans") { await answerCb(q.id); return plansScreen(chat, q.from.id); }
+  if (data.startsWith("lg:")) {
+    const l = asLang(data.slice(3));
+    if (chat < 0) {
+      if (!(await isGroupAdmin(chat, q.from.id, (await getGroup(chat))?.sponsor_id))) return answerCb(q.id, "Только для администраторов", true);
+      await db.from("groups").update({ lang: l }).eq("chat_id", chat); gcache.delete(chat);
+    } else {
+      const { data: u0 } = await db.from("users").select("settings").eq("id", q.from.id).maybeSingle();
+      await db.from("users").update({ settings: { ...(u0?.settings ?? {}), lang: l } }).eq("id", q.from.id); ucache.delete(q.from.id);
+    }
+    await answerCb(q.id);
+    return withLang(l, () => edit(chat, mid, `✅ Выбран язык: <b>${LANG_NAMES[l]}</b>`));
+  }
+  if (data.startsWith("cd:")) {
+    const { data: ev } = await db.from("events").select("*").eq("id", data.slice(3)).maybeSingle();
+    const { data: cl } = ev?.client_id ? await db.from("clients").select("*").eq("id", ev.client_id).maybeSingle() : { data: null };
+    if (!ev || !cl) return answerCb(q.id, "Нет данных клиента", true);
+    await answerCb(q.id);
+    const text = draftText(ev, cl, ev.tz), links = draftLinks(cl, text);
+    return send(chat, `📨 <b>Заготовка сообщения клиенту</b>\n<code>${esc(text)}</code>\n\nБот не может написать клиенту первым — нажмите кнопку, откроется чат с готовым текстом, останется отправить.`, links.length ? kb(links.map((l) => [l])) : {});
+  }
   if (data === "help") { await answerCb(q.id); return send(chat, HELP); }
   if (data === "del:no") { await answerCb(q.id); return edit(chat, mid, "Отменено, ничего не удалено."); }
   if (data === "del:yes") {
@@ -364,8 +477,8 @@ async function listEvents(chat: number, owner: number, tz: string, todayOnly: bo
   const items = ((data ?? []) as Ev[]).flatMap((ev) => expand(ev, from, to).map((o) => ({ ev, start: o.start })))
     .sort((a, b) => +a.start - +b.start).slice(0, 12);
   if (!items.length) return send(chat, todayOnly ? "Сегодня событий нет 🌿" : "Ближайших событий нет. Добавьте: <code>добавь встреча завтра в 11:00</code>");
-  const fmt = new Intl.DateTimeFormat("ru-RU", { timeZone: tz, day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
-  const fmtD = new Intl.DateTimeFormat("ru-RU", { timeZone: tz, day: "numeric", month: "short" });
+  const fmt = new Intl.DateTimeFormat(locale(), { timeZone: tz, day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  const fmtD = new Intl.DateTimeFormat(locale(), { timeZone: tz, day: "numeric", month: "short" });
   const rows = items.map((i) => `• ${i.ev.all_day ? fmtD.format(i.start) : fmt.format(i.start)} — ${esc(i.ev.title)}${byGroup && names.get(i.ev.owner_id) ? ` (${esc(names.get(i.ev.owner_id)!)})` : ""}`);
   return send(chat, `<b>${todayOnly ? "Сегодня" : "Ближайшие события"}</b>\n${rows.join("\n")}`);
 }
@@ -373,36 +486,75 @@ async function listEvents(chat: number, owner: number, tz: string, todayOnly: bo
 /* ------------------------------ тарифы и оплата ------------------------------ */
 async function plansScreen(chat: number, uid: number) {
   const user = await ensureUser(uid);
-  const cur = planOf(user);
-  const until = user.plan_until ? new Date(user.plan_until).toLocaleDateString("ru-RU", { timeZone: user.tz }) : "";
+  const cur = await effectivePlan(user);
+  const disc = (user as Any).disc_pct ?? 0;
+  const until = user.plan_until ? new Date(user.plan_until).toLocaleDateString(locale(), { timeZone: user.tz }) : "";
   const lf = limits("free");
   const text = `<b>Тарифы</b>\nСейчас: <b>${PLANS[cur].title}</b>${cur !== "free" ? ` (до ${until})` : ""}\n\n` +
-    `<b>Free</b> — бесплатно\nдо ${lf.maxEvents} активных событий, 1 напоминание, 1 группа, 2 темы\n\n` +
-    `<b>Plus</b> — ${PLANS.plus.stars.month}⭐/мес или ${PLANS.plus.stars.year}⭐/год\nбез лимита событий, повторы, до 3 напоминаний, все 8 тем, подписка для Apple/Google (ICS), 3 группы\n\n` +
+    `<b>Free</b> — бесплатно\nдо ${lf.maxEvents} активных событий, 1 напоминание, 1 группа, 3 темы\n\n` +
+    `<b>Plus</b> — ${PLANS.plus.stars.month}⭐/мес или ${PLANS.plus.stars.year}⭐/год\nбез лимита событий, повторы, до 3 напоминаний, все темы, подписка для Apple/Google (ICS), 3 группы\n\n` +
     `<b>Pro</b> — ${PLANS.pro.stars.month}⭐/мес или ${PLANS.pro.stars.year}⭐/год\nвсё из Plus + синхронизация с Google Календарём, до 5 напоминаний, группы без лимита\n\n` +
-    `<b>Team</b> — ${PLANS.team.stars.month}⭐/мес или ${PLANS.team.stars.year}⭐/год\nвсё из Pro + командный режим для салонов: у каждого сотрудника своя вкладка, запись «на сотрудника» по @нику, админ видит всех, напоминания в группу\n\n` +
-    `Месячная подписка продлевается сама, отмена в любой момент: Настройки Telegram → Мои звёзды → Подписки.`;
-  const [tm, ty] = await Promise.all([invoiceLink(uid, "team", "month"), invoiceLink(uid, "team", "year")]);
-  const [pm, py, rm, ry] = await Promise.all([
-    invoiceLink(uid, "plus", "month"), invoiceLink(uid, "plus", "year"), invoiceLink(uid, "pro", "month"), invoiceLink(uid, "pro", "year"),
-  ]);
-  const rows: { text: string; url: string }[][] = [];
-  if (pm && py) rows.push([{ text: `Plus · ${PLANS.plus.stars.month}⭐/мес`, url: pm }, { text: `Plus · ${PLANS.plus.stars.year}⭐/год`, url: py }]);
-  if (rm && ry) rows.push([{ text: `Pro · ${PLANS.pro.stars.month}⭐/мес`, url: rm }, { text: `Pro · ${PLANS.pro.stars.year}⭐/год`, url: ry }]);
-  if (tm && ty) rows.push([{ text: `Team · ${PLANS.team.stars.month}⭐/мес`, url: tm }, { text: `Team · ${PLANS.team.stars.year}⭐/год`, url: ty }]);
+    `<b>Team</b> — ${PLANS.team.stars.month}⭐/мес или ${PLANS.team.stars.year}⭐/год\nвсё из Pro + командный режим для салонов: у каждого сотрудника своя вкладка, запись «на сотрудника» по @нику, админ видит всех, напоминания в группу, всем участникам группы — Pro\n\n` +
+    (disc ? `🎁 <b>У вас скидка ${disc}%</b> (пригласите друга: /ref). Она действует на разовую оплату, без автопродления — цены на кнопках уже со скидкой.\n\n` : "") +
+    `Месячная подписка продлевается сама, отмена в любой момент: Настройки Telegram → Мои звёзды → Подписки. Возвраты: /paysupport.`;
+  const mk = async (plan: "plus" | "pro" | "team") => {
+    const [m, y] = await Promise.all([invoiceLink(uid, plan, "month", disc), invoiceLink(uid, plan, "year", disc)]);
+    const t = (period: Period) => `${PLANS[plan].title} · ${priceStars(plan, period, disc)}⭐/${period === "month" ? (disc ? "30 дн." : "мес") : "год"}${disc ? ` −${disc}%` : ""}`;
+    return m && y ? [{ text: t("month"), url: m }, { text: t("year"), url: y }] : null;
+  };
+  const rows = (await Promise.all([mk("plus"), mk("pro"), mk("team")])).filter(Boolean) as { text: string; url: string }[][];
   return send(chat, text, rows.length ? kb(rows) : {});
 }
 
 async function preCheckout(q: Any) {
-  const [plan, period, uid] = String(q.invoice_payload ?? "").split(":");
-  const ok = (plan === "plus" || plan === "pro" || plan === "team") && (period === "month" || period === "year") && Number(uid) === q.from.id
-    && q.total_amount === PLANS[plan].stars[period as Period] && q.currency === "XTR";
+  const [plan, period, uid, dflag] = String(q.invoice_payload ?? "").split(":");
+  const pct = dflag?.startsWith("d") ? Number(dflag.slice(1)) : 0;
+  let ok = (plan === "plus" || plan === "pro" || plan === "team") && (period === "month" || period === "year") && Number(uid) === q.from.id
+    && q.total_amount === priceStars(plan, period as Period, pct) && q.currency === "XTR";
+  if (ok && pct) { const { data: u } = await db.from("users").select("disc_pct").eq("id", q.from.id).maybeSingle(); ok = (u?.disc_pct ?? 0) === pct; }
   await tg("answerPreCheckoutQuery", { pre_checkout_query_id: q.id, ok, ...(ok ? {} : { error_message: "Не удалось проверить заказ. Попробуйте открыть /plan заново." }) });
+}
+
+/* ------------------------------ реферальная программа ------------------------------ */
+async function applyReferral(user: Any, refId: number) {
+  const fresh = Date.now() - new Date(user.created_at).getTime() < 180_000;
+  if (!fresh || !refId || refId === user.id || user.ref_by) return;
+  const { data: r } = await db.from("users").select("id").eq("id", refId).maybeSingle();
+  if (!r) return;
+  const { error } = await db.from("referrals").insert({ referee_id: user.id, referrer_id: refId });
+  if (error) return;
+  await db.from("users").update({ ref_by: refId, disc_pct: Math.max(user.disc_pct ?? 0, 20) }).eq("id", user.id);
+  await send(user.id, "🎁 Вас пригласил друг: у вас <b>скидка 20%</b> на оплату тарифа (/plan).");
+  await send(refId, "🎉 По вашей ссылке пришёл новый пользователь. Когда он оплатит тариф, вы получите <b>скидку 20%</b>.");
+}
+async function refInfo(chat: number, uid: number) {
+  const [{ count }, { data: u }] = await Promise.all([db.from("referrals").select("referee_id", { count: "exact", head: true }).eq("referrer_id", uid), db.from("users").select("disc_pct").eq("id", uid).maybeSingle()]);
+  return send(chat, `<b>Пригласите друга</b>\nВам и ему — скидка 20% на оплату тарифа: другу сразу, вам после его первой оплаты. Скидка действует на разовую оплату (месяц или год), без автопродления.\n\nВаша ссылка:\n<code>https://t.me/${BOT()}?start=ref_${uid}</code>\n\nПриглашено: ${count ?? 0} · Ваша скидка сейчас: ${u?.disc_pct ?? 0}%`);
+}
+
+/* ------------------------------ клиенты ------------------------------ */
+async function clientCmd(m: Any, cmd: string, arg: string, scope: number, tz: string) {
+  const chat = m.chat.id;
+  const [q, ...rest] = arg.trim().split(/\s+/);
+  if (!q) return send(chat, "Найти клиента: <code>/client +998901234567</code> или <code>/client @ник</code> или часть имени.\nЗаметка: <code>/note +998901234567 любит чай</code>\nИмя: <code>/name +998901234567 Анна</code>");
+  const digits = q.replace(/\D/g, "");
+  const base = db.from("clients").select("*").eq("scope_id", scope);
+  const { data } = await (q.startsWith("@") ? base.ilike("username", q.slice(1)) : digits.length >= 6 ? base.like("phone", `%${digits}`) : base.ilike("name", `%${q}%`)).limit(3);
+  if (!data?.length) return send(chat, "Клиент не найден. Клиенты создаются, когда в записи есть телефон или @ник клиента.");
+  const c = data[0];
+  if (cmd === "/note" || cmd === "/name") {
+    const val = rest.join(" ").slice(0, cmd === "/note" ? 1000 : 80);
+    if (!val) return send(chat, "Напишите текст после номера или ника.");
+    await db.from("clients").update(cmd === "/note" ? { note: val } : { name: val }).eq("id", c.id);
+    return send(chat, "✅ Сохранено.");
+  }
+  const { data: nx } = await db.from("events").select("id").eq("client_id", c.id).gte("starts_at", new Date().toISOString()).order("starts_at").limit(1).maybeSingle();
+  return send(chat, await clientCardText(c, tz, esc), nx ? kb([[{ text: "📨 Заготовка клиенту", data: `cd:${nx.id}` }]]) : {});
 }
 
 async function paid(m: Any) {
   const sp = m.successful_payment;
-  const [plan, period, uidS] = String(sp.invoice_payload).split(":") as [string, Period, string];
+  const [plan, period, uidS, dflag] = String(sp.invoice_payload).split(":") as [string, Period, string, string | undefined];
   const uid = Number(uidS);
   if (uid !== m.from.id) return;
   const { error } = await db.from("payments").insert({
@@ -417,12 +569,23 @@ async function paid(m: Any) {
     const same = user.plan === plan && user.plan_until && new Date(user.plan_until).getTime() > now;
     until = (same ? new Date(user.plan_until!).getTime() : now) + PERIOD_DAYS[period] * 86400000;
   }
-  await db.from("users").update({ plan, plan_until: new Date(until).toISOString() }).eq("id", uid);
-  const d = new Date(until).toLocaleDateString("ru-RU", { timeZone: user.tz });
+  await db.from("users").update({ plan, plan_until: new Date(until).toISOString(), ...(dflag?.startsWith("d") ? { disc_pct: 0 } : {}) }).eq("id", uid);
+  // первая оплата приглашённого → скидка пригласившему
+  const { count: nPay } = await db.from("payments").select("charge_id", { count: "exact", head: true }).eq("user_id", uid);
+  if ((nPay ?? 0) <= 1) {
+    const { data: rf } = await db.from("referrals").select("*").eq("referee_id", uid).eq("rewarded", false).maybeSingle();
+    if (rf) {
+      const { data: rr } = await db.from("users").select("disc_pct").eq("id", rf.referrer_id).maybeSingle();
+      await db.from("users").update({ disc_pct: Math.min(60, (rr?.disc_pct ?? 0) + 20) }).eq("id", rf.referrer_id);
+      await db.from("referrals").update({ rewarded: true }).eq("referee_id", uid);
+      await send(rf.referrer_id, "🎁 Приглашённый вами друг оплатил тариф: вам <b>скидка 20%</b> на следующую оплату (/plan).");
+    }
+  }
+  const d = new Date(until).toLocaleDateString(locale(), { timeZone: user.tz });
   await send(m.chat.id, sp.is_recurring && !sp.is_first_recurring
     ? `🔄 Подписка <b>${PLANS[plan as "plus"].title}</b> продлена до ${d}. Спасибо!`
     : `🎉 Готово! Тариф <b>${PLANS[plan as "plus"].title}</b> активен до ${d}.`, kb([[{ text: "📅 Открыть календарь", web_app: env("APP_URL") }]]));
-  await send(ADMIN(), `💰 +${sp.total_amount}⭐ · ${plan}/${period} · user ${uid}\n<code>${esc(sp.telegram_payment_charge_id)}</code>`);
+  await send(ADMIN(), `#оплата_подписки\n💰 +${sp.total_amount}⭐ · ${PLANS[plan as "plus"].title} · ${period === "month" ? "месяц" : "год"}${sp.is_recurring && !sp.is_first_recurring ? " · продление" : ""}${dflag ? " · со скидкой " + dflag.slice(1) + "%" : ""}\nuser: <a href="tg://user?id=${uid}">${uid}</a>\n<code>${esc(sp.telegram_payment_charge_id)}</code>`);
 }
 
 /* ------------------------------ экспорт / импорт ------------------------------ */
@@ -470,7 +633,7 @@ async function setMode(m: Any, g: Any, arg: string) {
     const { plan } = await planForOwner(chat);
     if (!limits(plan).team) return send(chat, "Командный режим входит в тариф <b>Team</b>. Тарифы: /plan в личном чате со мной (тариф действует по владельцу группы).", kb([[{ text: "⭐ Тарифы", url: `https://t.me/${BOT()}?start=plan` }]]));
   }
-  await db.from("groups").update({ mode: want }).eq("chat_id", chat);
+  await db.from("groups").update({ mode: want }).eq("chat_id", chat); gcache.delete(chat);
   return send(chat, want === "team"
     ? "✅ Командный режим включён.\nСотрудники: пусть каждый напишет в группе /join.\nЗапись: <code>запиши Анна маникюр завтра в 15:00 @мастер</code>\nБез @ника запись получит тот, кто написал."
     : "✅ Общий календарь группы.");
@@ -485,33 +648,82 @@ async function handleTeamText(m: Any, text: string, g: Any) {
   const chat = m.chat.id;
   const { tz } = await planForOwner(chat);
   const { cleaned, mentions } = extractMentions(text, m.entities ?? m.caption_entities, BOT());
-  const p = parseEvent(cleaned, tz);
+  const ph = extractPhone(cleaned);
+  const p = parseEvent(ph.cleaned, tz);
   const reply = (t: string, extra: Record<string, unknown> = {}) => send(chat, t, { reply_to_message_id: m.message_id, ...extra });
   if (!p.trigger || !p.title) return;
   if (!p.starts_at) return reply("Не нашёл дату. Пример: <code>запиши Анна маникюр завтра в 15:00 @мастер</code>");
 
   let assignee = m.from.id as number, aName = displayName(m.from);
-  if (mentions.length) {
-    const mem = await findMember(chat, mentions[0]);
-    if (!mem) return reply(`Не знаю @${esc(mentions[0].username ?? "")} в этой группе. Пусть напишет здесь /join.`);
-    assignee = mem.user_id; aName = mem.name || (mem.username ? "@" + mem.username : "сотрудник");
+  let clientUser: string | null = null;
+  for (const mn of mentions) {   // первый ник из группы — мастер; остальные (кого нет в группе) — клиент
+    const mem = await findMember(chat, mn);
+    if (mem && assignee === m.from.id && !mentions.some((x) => x === mn && false)) { if (mem.user_id !== m.from.id || mentions.length === 1) { assignee = mem.user_id; aName = mem.name || (mem.username ? "@" + mem.username : "сотрудник"); continue; } }
+    if (!mem && mn.username && !clientUser) clientUser = mn.username;
   }
+  if (!clientUser && !ph.phone && mentions.length && assignee === m.from.id && mentions.every((x) => x.username && !x.id)) {
+    const known = await findMember(chat, mentions[0]);
+    if (!known) return reply(`Не знаю @${esc(mentions[0].username ?? "")} в этой группе. Пусть напишет здесь /join. Если это клиент — добавьте его телефон или напишите «клиент» в тексте.`);
+  }
+  const client = ph.phone || clientUser ? await upsertClient(chat, { phone: ph.phone, username: clientUser }) : null;
   if (assignee !== m.from.id && !(await isGroupAdmin(chat, m.from.id, g.sponsor_id)))
     return reply("Записывать на других сотрудников могут только администраторы группы.");
   await db.from("group_members").upsert({ chat_id: chat, user_id: assignee, ...(assignee === m.from.id ? { username: m.from.username ?? null, name: aName } : {}) }, { onConflict: "chat_id,user_id" });
   await ensureUser(assignee);
+  const payload = { owner_id: assignee, group_id: chat, client_id: client?.id ?? null, created_by: m.from.id, tz, source: "bot", title: p.title,
+    starts_at: p.starts_at.toISOString(), ends_at: p.ends_at?.toISOString() ?? null, all_day: p.all_day, repeat: p.repeat, remind: p.noRemind ? [] : p.remind,
+    meta: { aName, fromName: displayName(m.from), fromId: m.from.id, chatTitle: m.chat.title ?? "" } };
+  return commitTeam(chat, m.message_id, payload, payload.meta);
+}
 
-  const r = await saveEvent({ owner_id: assignee, group_id: chat, created_by: m.from.id, tz, source: "bot", title: p.title,
-    starts_at: p.starts_at.toISOString(), ends_at: p.ends_at?.toISOString() ?? null, all_day: p.all_day, repeat: p.repeat, remind: p.noRemind ? [] : p.remind });
-  if (!r.ok) return reply(`🔒 ${esc(r.message)}`);
-  const ev = r.ev;
+/** Сохраняет запись сотрудника; при занятом времени спрашивает кнопками; пишет в группу и сотруднику лично. */
+async function commitTeam(chat: number, replyTo: number | null, payload: Any, meta: Any, editMid?: number) {
+  const { tz } = await planForOwner(chat);
+  const assignee = payload.owner_id as number;
+  const out = (t: string, extra: Record<string, unknown> = {}) => editMid ? edit(chat, editMid, t, extra) : send(chat, t, { reply_to_message_id: replyTo ?? undefined, ...extra });
+  const r = await saveEvent({ ...payload, tz } as Input);
+  if (!r.ok && r.reason === "conflict") return askConflict(chat, replyTo, editMid, { ...payload, force: true }, r.conflicts ?? [], tz);
+  if (!r.ok) return out(`🔒 ${esc(r.message)}`);
+  const ev = r.ev, aName = meta.aName ?? "сотрудник";
   const when = fmtWhen(new Date(ev.starts_at), tz, ev.all_day);
+  const endT = ev.ends_at && !ev.all_day ? ` – ${new Intl.DateTimeFormat(locale(), { timeZone: tz, hour: "2-digit", minute: "2-digit" }).format(new Date(ev.ends_at))}` : "";
   let note = "";
-  if (assignee !== m.from.id) {
-    const dm = await send(assignee, `📌 <b>Вам назначена запись</b>\n${esc(ev.title)}\n🗓 ${esc(when)}\n🔔 ${reminderText(ev.remind)}\n\nНазначил(а): ${esc(displayName(m.from))}\nГруппа: ${esc(m.chat.title ?? "")}`);
+  if (assignee !== meta.fromId) {
+    const dm = await send(assignee, `📌 <b>Вам назначена запись</b>\n${esc(ev.title)}\n🗓 ${esc(when)}${endT}\n🔔 ${reminderText(ev.remind)}\n\nНазначил(а): ${esc(meta.fromName ?? "")}\nГруппа: ${esc(meta.chatTitle ?? "")}`);
     if (!dm.ok) note = `\nℹ️ ${esc(aName)} ещё не запускал(а) бота: личные уведомления не придут. Пусть откроет @${BOT()} и нажмёт /start.`;
   }
   for (const n of r.notes) note += `\nℹ️ ${esc(n)}`;
-  return reply(`✅ <b>Запись для ${mention(assignee, aName)}</b>\n📌 ${esc(ev.title)}\n🗓 ${esc(when)}${ev.repeat ? `\n🔁 ${REPEAT_RU[ev.repeat]}` : ""}\n🔔 ${reminderText(ev.remind)}${note}`,
-    kb([[{ text: "↩️ Отменить", data: `undo:${ev.id}` }]]));
+  const cl = ev.client_id ? (await db.from("clients").select("*").eq("id", ev.client_id).maybeSingle()).data : null;
+  const clLine = cl ? `\n👤 ${esc([cl.name, cl.phone, cl.username ? "@" + cl.username : ""].filter(Boolean).join(" · ") || "Клиент")}` : "";
+  return out(`✅ <b>Запись для ${mention(assignee, aName)}</b>\n📌 ${esc(ev.title)}\n🗓 ${esc(when)}${endT}${ev.repeat ? `\n🔁 ${REPEAT_RU[ev.repeat]}` : ""}${clLine}\n🔔 ${reminderText(ev.remind)}${note}`,
+    kb([[{ text: "↩️ Отменить", data: `undo:${ev.id}` }], ...(cl ? [[{ text: "📨 Заготовка клиенту", data: `cd:${ev.id}` }]] : [])]));
+}
+
+/* ------------------------------ возвраты ------------------------------ */
+async function refundRequest(q: Any, chargeId: string) {
+  const { data: pay } = await db.from("payments").select("*").eq("charge_id", chargeId).eq("user_id", q.from.id).maybeSingle();
+  if (!pay || pay.refunded) return answerCb(q.id, "Оплата не найдена или уже возвращена", true);
+  const { data: last } = await db.from("payments").select("charge_id").eq("user_id", q.from.id).eq("refunded", false).order("created_at", { ascending: false }).limit(1).maybeSingle();
+  if (last?.charge_id !== chargeId) return answerCb(q.id, "Вернуть можно только последнюю оплату", true);
+  if (Date.now() - new Date(pay.created_at).getTime() > REFUND_WINDOW_DAYS * 86400000) return answerCb(q.id, `Прошло больше ${REFUND_WINDOW_DAYS} дней`, true);
+  const { data: dup } = await db.from("refund_requests").select("id").eq("charge_id", chargeId).eq("status", "new").maybeSingle();
+  if (dup) return answerCb(q.id, "Заявка уже отправлена", true);
+  const { data: rr } = await db.from("refund_requests").insert({ user_id: q.from.id, charge_id: chargeId }).select("id").single();
+  await answerCb(q.id, "Заявка отправлена");
+  await send(q.message.chat.id, "Заявка на возврат отправлена. Ответ придёт в этот чат.");
+  await send(ADMIN(), `#возврат_запрос\nuser: <a href="tg://user?id=${q.from.id}">${q.from.id}</a>\n${pay.stars}⭐ · ${pay.plan} · ${pay.period} · ${new Date(pay.created_at).toLocaleDateString(locale())}`,
+    kb([[{ text: "✅ Вернуть", data: `rfa:${rr!.id}` }, { text: "✖️ Отклонить", data: `rfd:${rr!.id}` }]]));
+}
+
+/** Возврат Stars и отключение тарифа. Прошлые периоды не затрагиваются. */
+async function doRefund(userId: number, chargeId: string) {
+  const { data: pay } = await db.from("payments").select("*").eq("charge_id", chargeId).maybeSingle();
+  const j = await tg("refundStarPayment", { user_id: userId, telegram_payment_charge_id: chargeId });
+  if (!j.ok) return { ok: false, error: String(j.description ?? "refund failed") };
+  await db.from("payments").update({ refunded: true }).eq("charge_id", chargeId);
+  if (pay?.is_recurring || pay?.period === "month") await tg("editUserStarSubscription", { user_id: userId, telegram_payment_charge_id: chargeId, is_canceled: true });   // остановить автопродление (если Telegram поддерживает)
+  await db.from("users").update({ plan: "free", plan_until: null }).eq("id", userId);
+  await send(userId, "↩️ Возврат выполнен: звёзды вернутся на ваш баланс, платный тариф отключён.");
+  await send(ADMIN(), `#возврат_подписки\nuser: <a href="tg://user?id=${userId}">${userId}</a>\n${pay?.stars ?? "?"}⭐ возвращено · тариф снят\n<code>${esc(chargeId)}</code>`);
+  return { ok: true };
 }

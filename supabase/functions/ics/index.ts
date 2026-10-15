@@ -1,6 +1,7 @@
 // Подписка на календарь для Apple / Google / Outlook: webcal://…/ics?t=СЕКРЕТНЫЙ_ТОКЕН
 import { db } from "../_shared/db.ts";
-import { limits, planOf } from "../_shared/plans.ts";
+import { limits } from "../_shared/plans.ts";
+import { effectivePlan } from "../_shared/groups.ts";
 import { buildIcs, type IcsEv } from "../_shared/ics.ts";
 
 Deno.serve(async (req) => {
@@ -8,7 +9,7 @@ Deno.serve(async (req) => {
   if (token.length < 32) return new Response("Not found", { status: 404 });
   const { data: u } = await db.from("users").select("*").eq("ics_token", token).maybeSingle();
   if (!u) return new Response("Not found", { status: 404 });
-  if (!limits(planOf(u)).ics) return new Response("Подписка доступна в тарифе Plus и выше", { status: 402 });
+  if (!limits(await effectivePlan(u)).ics) return new Response("Подписка доступна в тарифе Plus и выше", { status: 402 });
 
   const { data: m } = await db.from("group_members").select("chat_id").eq("user_id", u.id);
   const owners = [u.id, ...(m ?? []).map((x) => x.chat_id)];

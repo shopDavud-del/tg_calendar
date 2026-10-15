@@ -1,5 +1,6 @@
 import { db } from "./db.ts";
 import { tg } from "./tg.ts";
+import { planOf, RANK, type Plan } from "./plans.ts";
 
 const cache = new Map<string, { v: boolean; t: number }>();
 /** Администратор ли человек в группе: подключивший бота или админ чата в Telegram (кэш 5 минут). */
@@ -37,4 +38,32 @@ export async function findMember(chatId: number, m: Mention) {
   if (m.id) { const { data } = await db.from("group_members").select("*").eq("chat_id", chatId).eq("user_id", m.id).maybeSingle(); return data ?? { user_id: m.id, name: null, username: null }; }
   const { data } = await db.from("group_members").select("*").eq("chat_id", chatId).ilike("username", m.username!).maybeSingle();
   return data;
+}
+
+const memCache = new Map<string, { v: boolean; t: number }>();
+/** Состоит ли человек в группе сейчас (проверка в Telegram, кэш 10 минут). Вышедших убираем из списка. */
+export async function isMember(chatId: number, uid: number) {
+  const k = `${chatId}:${uid}`, c = memCache.get(k);
+  if (c && Date.now() - c.t < 600_000) return c.v;
+  const j = await tg("getChatMember", { chat_id: chatId, user_id: uid });
+  const st = j.result?.status as string | undefined;
+  const v = !!j.ok && ["creator", "administrator", "member", "restricted"].includes(st ?? "");
+  if (j.ok && !v) await db.from("group_members").delete().eq("chat_id", chatId).eq("user_id", uid);
+  if (j.ok) memCache.set(k, { v, t: Date.now() });
+  return j.ok ? v : true;   // при сбое Telegram не отнимаем тариф
+}
+/** Тариф с учётом групп: участник группы с оплаченным Team получает Pro, пока состоит в группе. */
+// deno-lint-ignore no-explicit-any
+export async function effectivePlan(u: any): Promise<Plan> {
+  const base = planOf(u);
+  if (!u || RANK[base] >= RANK.pro) return base;
+  const { data: ms } = await db.from("group_members").select("chat_id").eq("user_id", u.id).limit(50);
+  if (!ms?.length) return base;
+  const { data: gs } = await db.from("groups").select("chat_id,sponsor_id").in("chat_id", ms.map((m) => m.chat_id)).eq("active", true).eq("mode", "team");
+  for (const g of gs ?? []) {
+    if (!g.sponsor_id) continue;
+    const { data: sp } = await db.from("users").select("plan,plan_until").eq("id", g.sponsor_id).maybeSingle();
+    if (planOf(sp) === "team" && (await isMember(g.chat_id, u.id))) return "pro";
+  }
+  return base;
 }

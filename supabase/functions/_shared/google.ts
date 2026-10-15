@@ -2,7 +2,8 @@
 import { db } from "./db.ts";
 import { env } from "./env.ts";
 import { decrypt, encrypt } from "./crypto.ts";
-import { limits, planOf } from "./plans.ts";
+import { limits } from "./plans.ts";
+import { effectivePlan } from "./groups.ts";
 import type { Ev } from "./reminders.ts";
 import { localParts } from "./time.ts";
 
@@ -30,7 +31,9 @@ export async function saveToken(uid: number, refresh: string) {
   await db.from("google_tokens").upsert({ user_id: uid, refresh_enc: await encrypt(refresh), calendar_id: "primary", connected_at: new Date().toISOString() });
 }
 
+export let lastGoogleError = "";
 async function access(uid: number) {
+  lastGoogleError = "";
   const { data } = await db.from("google_tokens").select("*").eq("user_id", uid).maybeSingle();
   if (!data) return null;
   const r = await fetch("https://oauth2.googleapis.com/token", {
@@ -39,6 +42,7 @@ async function access(uid: number) {
   });
   const j = await r.json();
   if (!j.access_token) {
+    lastGoogleError = `${j.error ?? "token"}: ${j.error_description ?? ""}`.slice(0, 200);
     if (j.error === "invalid_grant") await db.from("google_tokens").delete().eq("user_id", uid); // пользователь отозвал доступ
     return null;
   }
@@ -55,7 +59,7 @@ async function access(uid: number) {
 
 async function canSync(uid: number) {
   const { data: u } = await db.from("users").select("plan,plan_until").eq("id", uid).maybeSingle();
-  return limits(planOf(u)).google;
+  return limits(await effectivePlan(u)).google;
 }
 const ymd = (d: Date, tz: string) => { const p = localParts(d, tz); return `${p.y}-${String(p.m).padStart(2, "0")}-${String(p.d).padStart(2, "0")}`; };
 const RR: Record<string, string> = { daily: "DAILY", weekly: "WEEKLY", monthly: "MONTHLY", yearly: "YEARLY" };
@@ -105,7 +109,7 @@ export async function deleteGoogle(ev: Ev) {
 export async function syncAll(uid: number) {
   if (!(await canSync(uid))) return { pulled: 0, pushed: 0, error: "plan" };
   const a = await access(uid);
-  if (!a) return { pulled: 0, pushed: 0, error: "not_connected" };
+  if (!a) return { pulled: 0, pushed: 0, error: "not_connected", detail: lastGoogleError };
   const { data: u } = await db.from("users").select("tz").eq("id", uid).single();
   const tz = u?.tz ?? "UTC";
 
@@ -115,6 +119,7 @@ export async function syncAll(uid: number) {
     timeMin: min.toISOString(), timeMax: max.toISOString(), singleEvents: "true", maxResults: "250", orderBy: "startTime",
   });
   const list = await fetch(url, { headers: { authorization: `Bearer ${a.token}` } }).then((r) => r.json());
+  if (list.error) return { pulled: 0, pushed: 0, error: "google", detail: `${list.error.code ?? ""} ${list.error.message ?? ""}`.trim().slice(0, 220) };
   const seen: string[] = [];
   const rows = [];
   for (const g of list.items ?? []) {
