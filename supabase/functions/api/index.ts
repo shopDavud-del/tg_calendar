@@ -9,7 +9,7 @@ import { removeEvent, saveEvent } from "../_shared/events.ts";
 import { invoiceLink } from "../_shared/payments.ts";
 import { authUrl, syncAll } from "../_shared/google.ts";
 import { applyPatch, withDefaults } from "../_shared/settings.ts";
-import { effectivePlan, isGroupAdmin } from "../_shared/groups.ts";
+import { effectivePlan, isGroupAdmin, isMember } from "../_shared/groups.ts";
 import { createCodes, redeem } from "../_shared/promo.ts";
 import { asLang, fromTelegram, withLang } from "../_shared/i18n.ts";
 import { draftText } from "../_shared/clients.ts";
@@ -47,7 +47,10 @@ async function groupsOf(uid: number): Promise<G[]> {
   if (!ids.length) return [];
   const { data: g } = await db.from("groups").select("chat_id,title,active,mode,sponsor_id").in("chat_id", ids).eq("active", true);
   const out: G[] = [];
-  for (const x of g ?? []) {
+  // вышедшие из группы в Telegram теряют доступ к её календарю (проверка кэшируется на 10 минут)
+  const live = await Promise.all((g ?? []).map((x) => isMember(x.chat_id, uid)));
+  for (const [i, x] of (g ?? []).entries()) {
+    if (!live[i]) continue;
     const team = x.mode === "team";
     const isAdmin = team ? await isGroupAdmin(x.chat_id, uid, x.sponsor_id) : false;
     const gg: G = { id: x.chat_id, title: x.title ?? "Группа", mode: x.mode, isAdmin, sponsor: x.sponsor_id };
