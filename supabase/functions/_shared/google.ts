@@ -16,7 +16,7 @@ export const redirectUri = () => `${env("SUPABASE_URL")}/functions/v1/google`;
 export function authUrl(state: string) {
   const p = new URLSearchParams({
     client_id: env("GOOGLE_CLIENT_ID"), redirect_uri: redirectUri(), response_type: "code", scope: SCOPE,
-    access_type: "offline", prompt: "consent", state, include_granted_scopes: "false",
+    access_type: "offline", prompt: "consent", state,
   });
   return `https://accounts.google.com/o/oauth2/v2/auth?${p}`;
 }
@@ -70,7 +70,7 @@ function toGoogle(ev: Ev) {
   const body: Record<string, unknown> = {
     summary: ev.title, description: ev.notes ?? undefined,
     extendedProperties: { private: { tg: "1" } },
-    reminders: { useDefault: false, overrides: (ev.remind ?? []).filter((m) => m > 0).slice(0, 5).map((m) => ({ method: "popup", minutes: m })) },
+    reminders: { useDefault: false, overrides: (ev.remind ?? []).filter((m) => m > 0 && m <= 40320).slice(0, 5).map((m) => ({ method: "popup", minutes: m })) },
   };
   if (ev.all_day) {
     body.start = { date: ymd(s, ev.tz) };

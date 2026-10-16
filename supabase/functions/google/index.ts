@@ -6,8 +6,8 @@ import { send } from "../_shared/tg.ts";
 
 Deno.serve(async (req) => {
   const url = new URL(req.url);
-  const base = env("APP_URL").replace(/\/+$/, "");
-  const back = (s: string, why = "") => new Response(null, { status: 302, headers: { location: `${base}/?google=${s}${why ? `&why=${encodeURIComponent(why)}` : ""}` } });
+  // Возвращаем человека в Telegram (внешний браузер не должен оставаться на странице календаря)
+  const back = (s: string, why = "") => new Response(null, { status: 302, headers: { location: `https://t.me/${env("BOT_USERNAME")}?start=${encodeURIComponent("g_" + s + (why ? "_" + why.replace(/[^a-zA-Z0-9]/g, "").slice(0, 24) : ""))}` } });
   const code = url.searchParams.get("code"), state = url.searchParams.get("state");
   const gerr = url.searchParams.get("error");
   if (gerr || !code || !state) return back("denied", gerr ?? "no_code");

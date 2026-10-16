@@ -46,12 +46,14 @@ export interface Parsed {
   repeat: string | null;
   remind: number[] | null;   // null = по умолчанию
   noRemind: boolean;
+  reminder: boolean;         // команда «напомни…»: уведомить в сам момент, а не за 30 минут
 }
 
 export function parseEvent(raw: string, tz: string, now = new Date()): Parsed {
   let t = raw.replace(/@\w+bot\b/gi, "").trim();
   const trig = t.match(TRIGGER_RE);
   const trigger = !!trig && trig[0].trim().length > 0;
+  const reminder = trigger && /^\s*(?:напомн|не\s*забудь|remind)/i.test(trig![0]);
   if (trigger) t = t.slice(trig![0].length);
 
   // повтор
@@ -117,10 +119,13 @@ export function parseEvent(raw: string, tz: string, now = new Date()): Parsed {
     }
   }
 
-  let title = t.replace(/\s+/g, " ").replace(/^[\s,.:;–—-]+|[\s,.:;–—-]+$/g, "")
-    .replace(/^(?:на|в|во|о|про|что)\s+/i, "").replace(/\s+(?:в|на|во|к|с|до|on|at|in|for|to)$/i, "").trim();
+  let title = t.replace(/\s+/g, " ").replace(/^[\s,.:;–—-]+|[\s,.:;–—-]+$/g, "");
+  for (let i = 0; i < 3; i++) title = title.replace(/^(?:мне|нам|ему|ей|им|себе|me|us|to|that|на|в|во|о|про|что)\s+/i, "");   // «напомни мне про…» → «…»
+  title = title.replace(/\s+(?:в|на|во|к|с|до|on|at|in|for|to)$/i, "").trim();
   if (title) title = title[0].toUpperCase() + title.slice(1);
-  return { trigger, title: title || null, starts_at: starts, ends_at: ends, all_day: allDay, repeat, remind, noRemind };
+  return { trigger, title: title || null, starts_at: starts, ends_at: ends, all_day: allDay, repeat, remind, noRemind, reminder };
 }
+/** Напоминания события: из фразы («за час»), «без напоминания», для «напомни…» — в сам момент, иначе по умолчанию (null). */
+export function remindOf(p: Parsed): number[] | null { return p.noRemind ? [] : (p.remind ?? (p.reminder && !p.all_day ? [0] : null)); }
 
 export function defaultRemind(allDay: boolean) { return allDay ? [-540] : [30]; }

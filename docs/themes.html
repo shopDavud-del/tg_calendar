@@ -31,6 +31,7 @@
   <div class="grp"><span>Вид</span><button data-g="view" data-v="month" class="on">Месяц</button><button data-g="view" data-v="week">Неделя</button><button data-g="view" data-v="day">День</button></div>
   <div class="grp"><span>Отметки</span><button data-g="mark" data-v="scribble" class="on">Зигзаг</button><button data-g="mark" data-v="stroke">Мазок</button><button data-g="mark" data-v="dot">Точка</button></div>
   <div class="grp"><span>Выбранный день</span><button data-g="sel" data-v="fill" class="on">Заливка</button><button data-g="sel" data-v="ring">Кольцо</button></div>
+  <div class="grp"><span>Многодневные</span><button data-g="multi" data-v="bars" class="on">Линия</button><button data-g="multi" data-v="frame">Рамка</button><button data-g="multi" data-v="ribbon">Лента</button><button data-g="multi" data-v="ends">Метки</button><button data-g="multi" data-v="dots">Точка и тире</button></div>
   <div class="grp"><span>Углы</span><button data-g="radius" data-v="6">Острые</button><button data-g="radius" data-v="22" class="on">Мягкие</button><button data-g="radius" data-v="50">Круглые</button></div>
 </header>
 <p class="note">Живые экраны приложения в демо-режиме. Переключайте вид, стиль отметок и скругление сверху: все карточки обновятся.</p>
@@ -43,10 +44,10 @@ const T = [
   ["cherry-champagne","Вишня · шампань","#141417","#E6D3B3"],["cherry-honey","Вишня · медь","#141417","#D4925F"],
   ["cherry-lavender","Вишня · лаванда","#141417","#B8B3FF"],["cherry-ice","Вишня · лёд","#141417","#A6DCF2"],["cherry","Чистая вишня","#141417","#B3263C"],
 ];
-const st = { view: "month", mark: "scribble", sel: "fill", radius: "22" };
+const st = { view: "month", mark: "scribble", sel: "fill", multi: "bars", radius: "22" };
 const grid = document.getElementById("grid");
 function draw() {
-  grid.innerHTML = T.map(([id, name, bg, ac, free]) => `<div class="card"><div class="phone"><iframe loading="lazy" title="${name}" src="index.html?demo=1&theme=${id}&view=${st.view}&mark=${st.mark}&sel=${st.sel}&radius=${st.radius}"></iframe></div>
+  grid.innerHTML = T.map(([id, name, bg, ac, free]) => `<div class="card"><div class="phone"><iframe loading="lazy" title="${name}" src="index.html?demo=1&theme=${id}&view=${st.view}&mark=${st.mark}&sel=${st.sel}&multi=${st.multi}&radius=${st.radius}"></iframe></div>
     <div class="name"><span class="dot" style="background:${bg}"></span><span class="dot" style="background:${ac}"></span>${name}<span class="tag ${free ? "free" : ""}">${free ? "бесплатно" : "Plus и выше"}</span></div></div>`).join("");
 }
 document.querySelectorAll("button[data-g]").forEach((b) => b.addEventListener("click", () => {

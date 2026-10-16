@@ -28,6 +28,9 @@ export async function deleteAccount(uid: number) {
   }
   await db.from("events").delete().eq("owner_id", uid);
   await db.from("day_marks").delete().eq("user_id", uid);
+  await db.from("clients").delete().eq("scope_id", uid);
+  await db.from("services").delete().eq("owner_id", uid);
+  await db.from("referrals").delete().eq("referee_id", uid);
   await db.from("digest_log").delete().eq("user_id", uid);
   await db.from("promo_redemptions").delete().eq("user_id", uid);
   await db.from("group_members").delete().eq("user_id", uid);

@@ -4,7 +4,7 @@ import { asLang, fromTelegram, getLang, locale, withLang, type Lang } from "../_
 import { env } from "../_shared/env.ts";
 import { answerCb, edit, esc, kb, send, tg } from "../_shared/tg.ts";
 import { ensureUser, deleteAccount } from "../_shared/account.ts";
-import { looksLikeTrigger, parseEvent, TRIGGER_WORDS } from "../_shared/parse.ts";
+import { looksLikeTrigger, parseEvent, remindOf, TRIGGER_WORDS } from "../_shared/parse.ts";
 import { expand, fmtWhen, localParts, validTz, zonedToUtc } from "../_shared/time.ts";
 import { limits, PERIOD_DAYS, PLANS, planOf, TRIAL_DAYS } from "../_shared/plans.ts";
 import { planForOwner, removeEvent, saveEvent, type Input } from "../_shared/events.ts";
@@ -16,6 +16,7 @@ import { displayName, extractMentions, findMember, isGroupAdmin, mention } from 
 import { createCodes, redeem } from "../_shared/promo.ts";
 import { clientCardText, draftLinks, draftText, extractPhone, upsertClient } from "../_shared/clients.ts";
 import { LANG_NAMES, LANGS } from "../_shared/i18n.ts";
+import { same } from "../_shared/auth.ts";
 import { priceStars } from "../_shared/payments.ts";
 import { REFUND_WINDOW_DAYS } from "../_shared/plans.ts";
 import { effectivePlan } from "../_shared/groups.ts";
@@ -25,7 +26,7 @@ const ADMIN = () => Number(env("ADMIN_ID"));
 const REPEAT_RU: Record<string, string> = { daily: "каждый день", weekly: "каждую неделю", monthly: "каждый месяц", yearly: "каждый год" };
 
 Deno.serve(async (req) => {
-  if (req.headers.get("x-telegram-bot-api-secret-token") !== env("WEBHOOK_SECRET")) return new Response("forbidden", { status: 401 });
+  if (!same(req.headers.get("x-telegram-bot-api-secret-token") ?? "", env("WEBHOOK_SECRET"))) return new Response("forbidden", { status: 401 });
   try { await route(await req.json()); } catch (e) { console.error("bot error", e); }
   return new Response("ok");   // всегда 200, иначе Telegram будет слать повторы
 });
@@ -42,7 +43,17 @@ async function userLang(uid: number, code?: string): Promise<Lang> {
   ucache.set(uid, { lang: l, t: Date.now() });
   return l;
 }
+// Защита от «заливки» бота сообщениями: не больше 25 событий в минуту от одного человека (в памяти экземпляра)
+const rate = new Map<number, { n: number; t: number }>();
+function tooFast(uid: number) {
+  const now = Date.now(), r = rate.get(uid);
+  if (!r || now - r.t > 60_000) { rate.set(uid, { n: 1, t: now }); if (rate.size > 5000) rate.clear(); return false; }
+  return ++r.n > 25;
+}
+const codeFails = new Map<number, { n: number; t: number }>();
 async function route(u: Any) {
+  const uidr = u.message?.from?.id ?? u.callback_query?.from?.id;
+  if (uidr && tooFast(uidr)) return;
   const from = u.message?.from ?? u.callback_query?.from ?? u.pre_checkout_query?.from ?? u.my_chat_member?.from;
   const chat = u.message?.chat ?? u.callback_query?.message?.chat ?? u.my_chat_member?.chat;
   let lang: Lang = "ru";
@@ -74,6 +85,7 @@ const HELP = `<b>Как добавлять события</b>
 1. Сначала слово-команда, потом название, потом дата и время.
 2. Нет времени — событие на весь день (напомню в 9:00).
 3. «Напомнить за …» — минуты, часы или дни. «Без напоминания» отключает уведомление.
+   Команды «напомни», «напомнить», «не забудь» — уведомление придёт в сам момент: <code>напомни позвонить маме завтра в 10:00</code>.
 4. Повтор: каждый день / неделю / месяц / год или «каждый понедельник».
 5. Если я не уверен — покажу, как понял, и спрошу кнопками.
 
@@ -141,6 +153,11 @@ async function privateCommand(m: Any, cmd: string, arg: string, user: Any) {
   const chat = m.chat.id;
   switch (cmd) {
     case "/start": {
+      if (arg.trim().startsWith("g_")) {
+        const why = arg.trim().split("_").slice(2).join("_");
+        const M: Record<string, string> = { accessdenied: "Доступ не выдан. Если приложение Google в режиме Testing, добавьте свою почту в Test users.", redirecturimismatch: "В консоли Google не совпадает Redirect URI (см. админ-панель приложения).", invalidclient: "Неверный Client ID или Secret.", invalidgrant: "Код устарел, попробуйте подключить ещё раз.", state: "Сессия устарела, нажмите «Подключить» снова.", norefreshtoken: "Google не выдал постоянный доступ. Отзовите доступ в myaccount.google.com/permissions и подключите снова." };
+        return send(chat, arg.trim().startsWith("g_ok") ? "✅ Google Календарь подключён. Откройте приложение → Настройки → Подключения → Синхронизировать." : `⚠️ Google: ${M[why.toLowerCase()] ?? "не получилось подключить (" + esc(why) + ")."}`);
+      }
       if (arg.trim() === "plan") return plansScreen(chat, user.id);
       if (/^ref_\d+$/.test(arg.trim())) await applyReferral(user, Number(arg.trim().slice(4)));
       const fresh = Date.now() - new Date(user.created_at).getTime() < 120_000;
@@ -165,7 +182,10 @@ async function privateCommand(m: Any, cmd: string, arg: string, user: Any) {
     case "/client": case "/note": case "/name": return clientCmd(m, cmd, arg, user.id, user.tz);
     case "/code": case "/redeem": {
       if (!arg.trim()) return send(chat, "Отправьте код так: <code>/code CAL-XXXX-XXXX</code>");
+      const cf = codeFails.get(user.id);
+      if (cf && cf.n >= 8 && Date.now() - cf.t < 600_000) return send(chat, "Слишком много попыток. Попробуйте через 10 минут.");
       const r = await redeem(user.id, arg);
+      if (!r.ok) codeFails.set(user.id, { n: (cf && Date.now() - cf.t < 600_000 ? cf.n : 0) + 1, t: Date.now() });
       return send(chat, r.ok ? `🎁 Код принят! Тариф <b>${PLANS[r.plan].title}</b> активен до ${new Date(r.until).toLocaleDateString(locale(), { timeZone: user.tz })}.` : `❌ ${esc(r.message)}`);
     }
     case "/terms": return send(chat, "<b>Условия</b>\nТарифы Plus и Pro оплачиваются в Telegram Stars. Месячная подписка продлевается каждые 30 дней; отменить можно в любой момент: Настройки Telegram → Мои звёзды → Подписки. Оплаченный период сохраняется до конца. Возврат — по запросу через /paysupport.\nМы храним только ваш Telegram ID, часовой пояс, настройки и события.");
@@ -254,6 +274,7 @@ async function groupMessage(m: Any, text: string) {
     if (!g.active) return send(chat.id, "Календарь этой группы выключен: превышен лимит групп в тарифе. Владелец может нажать /activate после обновления тарифа.");
     if (cmd === "/list" || cmd === "/today") { const { tz } = await planForOwner(chat.id); return listEvents(chat.id, chat.id, tz, cmd === "/today", g.mode === "team"); }
     if (cmd === "/ask") {
+      if (!(await isGroupAdmin(chat.id, m.from.id, g.sponsor_id))) return send(chat.id, "Только для администраторов группы.");
       const on = /^(on|вкл|да)/i.test(arg.trim());
       if (!arg.trim()) return send(chat.id, `Сейчас: ${g.ask_unclear ? "спрашиваю про сообщения с датой" : "реагирую только на слова-команды"}.\n/ask on или /ask off`);
       await db.from("groups").update({ ask_unclear: on }).eq("chat_id", chat.id); gcache.delete(chat.id);
@@ -309,7 +330,7 @@ async function handleText(m: Any, text: string, owner: number, isGroup: boolean,
   const base = { owner_id: owner, created_by: m.from.id, tz, source: "bot" };
 
   if (p.trigger && p.title && p.starts_at) {
-    return createFromParsed(chat, m.message_id, { ...base, ...(await withClient()), title: p.title, starts_at: p.starts_at.toISOString(), ends_at: p.ends_at?.toISOString() ?? null, all_day: p.all_day, repeat: p.repeat, remind: p.noRemind ? [] : p.remind });
+    return createFromParsed(chat, m.message_id, { ...base, ...(await withClient()), title: p.title, starts_at: p.starts_at.toISOString(), ends_at: p.ends_at?.toISOString() ?? null, all_day: p.all_day, repeat: p.repeat, remind: remindOf(p) });
   }
   const todayStart = () => { const l = localParts(new Date(), tz); return zonedToUtc(l.y, l.m, l.d, 0, 0, tz); };
 
@@ -320,7 +341,7 @@ async function handleText(m: Any, text: string, owner: number, isGroup: boolean,
   }
   if (!p.trigger && p.title && p.starts_at && (!isGroup || group?.ask_unclear)) {
     const when = fmtWhen(p.starts_at, tz, p.all_day);
-    return askYesNo(chat, m, { ...base, ...(await withClient()), title: p.title, starts_at: p.starts_at.toISOString(), ends_at: p.ends_at?.toISOString() ?? null, all_day: p.all_day, repeat: p.repeat, remind: p.noRemind ? [] : p.remind },
+    return askYesNo(chat, m, { ...base, ...(await withClient()), title: p.title, starts_at: p.starts_at.toISOString(), ends_at: p.ends_at?.toISOString() ?? null, all_day: p.all_day, repeat: p.repeat, remind: remindOf(p) },
       `Это событие? Добавить в календарь?\n📌 <b>${esc(p.title)}</b>\n🗓 ${esc(when)}`);
   }
   if (!isGroup) return reply("Не понял 🤔 Начните со слова-команды и укажите дату:\n<code>добавь встреча завтра в 11:00</code>\n\nПодробнее: /help");
@@ -445,6 +466,7 @@ async function callback(q: Any) {
     const { data: ev } = await db.from("events").select("*").eq("id", data.slice(3)).maybeSingle();
     const { data: cl } = ev?.client_id ? await db.from("clients").select("*").eq("id", ev.client_id).maybeSingle() : { data: null };
     if (!ev || !cl) return answerCb(q.id, "Нет данных клиента", true);
+    if (!ev.group_id && ev.owner_id > 0 && ev.owner_id !== q.from.id) return answerCb(q.id, "Это не ваша запись", true);
     await answerCb(q.id);
     const text = draftText(ev, cl, ev.tz), links = draftLinks(cl, text);
     return send(chat, `📨 <b>Заготовка сообщения клиенту</b>\n<code>${esc(text)}</code>\n\nБот не может написать клиенту первым — нажмите кнопку, откроется чат с готовым текстом, останется отправить.`, links.length ? kb(links.map((l) => [l])) : {});
@@ -557,6 +579,7 @@ async function paid(m: Any) {
   const [plan, period, uidS, dflag] = String(sp.invoice_payload).split(":") as [string, Period, string, string | undefined];
   const uid = Number(uidS);
   if (uid !== m.from.id) return;
+  if (sp.currency !== "XTR" || sp.total_amount !== priceStars(plan as "plus", period, dflag?.startsWith("d") ? Number(dflag.slice(1)) : 0)) { console.error("payment amount mismatch", sp.total_amount, plan, period); await send(ADMIN(), `⚠️ Оплата с неожиданной суммой: ${sp.total_amount} (${plan}/${period}), user ${uid}. Проверьте вручную.`); return; }
   const { error } = await db.from("payments").insert({
     charge_id: sp.telegram_payment_charge_id, user_id: uid, plan, period, stars: sp.total_amount, is_recurring: !!sp.is_recurring,
   });
@@ -671,7 +694,7 @@ async function handleTeamText(m: Any, text: string, g: Any) {
   await db.from("group_members").upsert({ chat_id: chat, user_id: assignee, ...(assignee === m.from.id ? { username: m.from.username ?? null, name: aName } : {}) }, { onConflict: "chat_id,user_id" });
   await ensureUser(assignee);
   const payload = { owner_id: assignee, group_id: chat, client_id: client?.id ?? null, created_by: m.from.id, tz, source: "bot", title: p.title,
-    starts_at: p.starts_at.toISOString(), ends_at: p.ends_at?.toISOString() ?? null, all_day: p.all_day, repeat: p.repeat, remind: p.noRemind ? [] : p.remind,
+    starts_at: p.starts_at.toISOString(), ends_at: p.ends_at?.toISOString() ?? null, all_day: p.all_day, repeat: p.repeat, remind: remindOf(p),
     meta: { aName, fromName: displayName(m.from), fromId: m.from.id, chatTitle: m.chat.title ?? "" } };
   return commitTeam(chat, m.message_id, payload, payload.meta);
 }

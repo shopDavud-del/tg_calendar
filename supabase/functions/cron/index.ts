@@ -7,13 +7,14 @@ import { schedule, type Ev } from "../_shared/reminders.ts";
 import { expand, fmtWhen, localParts, zonedToUtc } from "../_shared/time.ts";
 import { withDefaults } from "../_shared/settings.ts";
 import { mention } from "../_shared/groups.ts";
+import { same } from "../_shared/auth.ts";
 import { draftLinks, draftText } from "../_shared/clients.ts";
 
 const KEEPALIVE_DAYS = 5;
 let lastTickWrite = 0;
 
 Deno.serve(async (req) => {
-  if (req.headers.get("x-cron-secret") !== env("CRON_SECRET")) return new Response("forbidden", { status: 401 });
+  if (!same(req.headers.get("x-cron-secret") ?? "", env("CRON_SECRET"))) return new Response("forbidden", { status: 401 });
   const out: Record<string, unknown> = {};
   if (Date.now() - lastTickWrite > 120_000) {   // метка работы планировщика: раз в 2 минуты, а не каждую
     lastTickWrite = Date.now();

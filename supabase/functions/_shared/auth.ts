@@ -4,7 +4,7 @@ async function hmac(key: BufferSource, data: string) {
   const k = await crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   return crypto.subtle.sign("HMAC", k, enc.encode(data));
 }
-function same(a: string, b: string) {
+export function same(a: string, b: string) {
   if (a.length !== b.length) return false;
   let r = 0; for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return r === 0;

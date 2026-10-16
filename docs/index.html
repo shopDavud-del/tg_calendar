@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://telegram.org; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src https://*.supabase.co; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
 <title>Календарь</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -196,7 +198,112 @@ pre.codes { background: var(--panel); padding: 12px; border-radius: var(--rc); c
 #toast { position: fixed; left: 50%; bottom: calc(var(--sab) + 96px); translate: -50% 0; background: var(--tx); color: var(--bg); padding: 11px 16px; border-radius: var(--rc); font-weight: 600; z-index: 40; opacity: 0; pointer-events: none; transition: opacity .2s; max-width: 86vw; text-align: center; }
 #toast.on { opacity: 1; }
 button:focus-visible, .in:focus-visible { outline: 2px solid var(--ac); outline-offset: 2px; }
+
+/* ===== v2.1 ===== */
+:root, [data-theme="midnight"], [data-theme="black"], [data-theme="emerald"], [data-theme="bordeaux"], [data-theme="teal"], [data-theme^="cherry"] { color-scheme: dark; }
+[data-theme="indigo"], [data-theme="terracotta"], [data-theme="sage"], [data-theme="luxury"] { color-scheme: light; }
+input[type=number] { -moz-appearance: textfield; appearance: textfield; }
+input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.sel { position: relative; }
+.sel select { appearance: none; -webkit-appearance: none; padding-right: 42px; cursor: pointer; }
+.sel::after { content: ""; position: absolute; right: 17px; top: 50%; width: 8px; height: 8px; border-right: 2.2px solid var(--mut); border-bottom: 2.2px solid var(--mut); transform: translateY(-72%) rotate(45deg); pointer-events: none; border-radius: 1px; }
+.timebtn { width: 100%; min-height: 46px; padding: 0 14px; border-radius: var(--rc); background: var(--panel); font-weight: 650; font-size: 18px; text-align: center; letter-spacing: .02em; border: 1.5px solid transparent; }
+.timebtn:active { border-color: var(--ac); }
+.timebtn.sm { width: auto; min-width: 86px; min-height: 40px; font-size: 16px; background: var(--panel2); }
+.pk { max-width: 420px; }
+.pkbig { display: flex; justify-content: center; align-items: baseline; gap: 6px; font-size: 52px; font-weight: 650; margin: 2px 0 14px; letter-spacing: -.02em; }
+.pkbig i { font-style: normal; color: var(--mut); }
+.pkgrid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+.pkc { padding: 11px 0; border-radius: var(--rs); background: var(--panel); font-weight: 600; font-variant-numeric: tabular-nums; }
+.pkc.on { background: var(--acbg); color: var(--acink); }
+.stp { display: inline-flex; align-items: center; background: var(--panel2); border-radius: var(--rs); overflow: hidden; flex: none; }
+.stp button { width: 40px; height: 40px; font-size: 22px; font-weight: 500; color: var(--tx); }
+.stp button:active { background: var(--line); }
+.stp b { min-width: 44px; text-align: center; font-size: 16px; }
+.crow2 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.plate { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px; text-align: left; background: var(--panel); border-radius: calc(var(--rc) + 2px); padding: 14px 16px; margin: 0 0 10px; box-shadow: inset 0 0 0 1.5px var(--ac); }
+.plate b { display: block; font-size: 16px; } .plate small { color: var(--mut); font-size: 12.5px; }
+.plate.static { box-shadow: none; }
+.acc { background: var(--panel); border-radius: calc(var(--rc) + 2px); margin-bottom: 10px; overflow: hidden; }
+.acch { width: 100%; display: flex; align-items: center; justify-content: space-between; padding: 15px 16px; font-weight: 650; font-size: 16px; text-align: left; }
+.acch svg { transition: transform .2s; color: var(--mut); }
+.acc.open .acch svg { transform: rotate(180deg); }
+.accb { display: none; padding: 2px 14px 16px; }
+.acc.open .accb { display: block; }
+.accb .kv { background: var(--panel2); }
+.accb .crow { background: var(--panel2); }
+.ev { flex-direction: row; align-items: center; gap: 6px; padding: 6px 8px 6px 4px; }
+.evm { flex: 1; min-width: 0; text-align: left; display: flex; flex-direction: column; gap: 3px; padding: 7px 8px 7px 12px; color: inherit; }
+.evm b { font-weight: 650; font-size: 16px; }
+.evb { display: flex; gap: 6px; flex: none; }
+.ib { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 50%; background: rgba(127,127,127,.18); color: inherit; transition: background .15s, transform .1s; }
+.ib:active { transform: scale(.9); }
+.ib.ck.on { background: var(--good); color: #0b1f14; }
+.cd { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; vertical-align: 0; }
+.ev.done .evm small, .ev.done .evm .tag { opacity: .55; }
+[data-done="strike"] .ev.done .evm b { text-decoration: line-through; text-decoration-thickness: 2.2px; opacity: .7; }
+[data-done="marker"] .ev.done .evm b { background: linear-gradient(transparent 42%, color-mix(in srgb, var(--good) 85%, transparent) 42% 66%, transparent 66%); }
+[data-done="fade"] .ev.done { opacity: .45; }
+
+/* ===== многодневные задачи: линии поверх плиток (сетка не меняется) ===== */
+.gw { position: relative; }
+.bars { position: absolute; inset: 0; display: grid; grid-template-columns: repeat(7, 1fr); column-gap: 6px; row-gap: 6px; pointer-events: none; z-index: 3; }
+.bar { display: block; height: 4px; align-self: end; box-shadow: 0 0 0 1px rgba(0,0,0,.22); }
+.tile.hasbar .dots, .wtile.hasbar .dots { bottom: auto; top: 8%; }
+.acct { display: flex; flex-direction: column; min-width: 0; }
+.acct small { color: var(--mut); font-weight: 500; font-size: 12.5px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 62vw; }
+
+/* способы отметки многодневных задач */
+.bar.rib { height: auto; align-self: stretch; opacity: .3; box-shadow: none; }
+.bar.mkx { height: auto; background: none !important; box-shadow: none; font-style: normal; font-weight: 700; font-size: 12px; line-height: 1; align-self: start; }
+.bar.dtp { width: 7px; height: 7px; border-radius: 50%; justify-self: center; }
+.bar.dsh { width: 15px; height: 3px; border-radius: 2px; justify-self: center; box-shadow: none; }
+.prev + .lbl, .gw .tile.hasbar .dots { }
+
+.tour p { color: var(--mut); line-height: 1.55; text-align: center; margin: 6px 6px 0; }
+.tourimg { display: grid; place-items: center; height: 132px; margin: 2px 0 10px; color: var(--ac); }
+.tdots { display: flex; gap: 6px; justify-content: center; margin: 18px 0 8px; }
+.tdots i { width: 7px; height: 7px; border-radius: 4px; background: var(--line); transition: width .2s, background .2s; }
+.tdots i.on { width: 22px; background: var(--ac); }
+
+/* ===== v3.1: шапка, меню настроек, выбор времени и даты ===== */
+.ic { width: 36px; height: 36px; } .hr2 { gap: 5px; } h1 { font-size: 20px; }
+.mgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+.mcard { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; text-align: left; background: var(--panel); border-radius: calc(var(--rc) + 2px); padding: 14px; min-height: 92px; min-width: 0; }
+.mcard:active { transform: scale(.97); }
+.mcard .mic { color: var(--ac); margin-bottom: 4px; } .mcard b { font-size: 15px; font-weight: 650; } .mcard small { color: var(--mut); font-size: 12px; line-height: 1.3; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.back { display: inline-flex; align-items: center; gap: 4px; color: var(--ac); font-weight: 650; margin: -4px 0 8px; padding: 4px 0; }
+.wheels { position: relative; display: flex; justify-content: center; align-items: center; gap: 4px; height: 220px; margin: 8px 0 16px; }
+.wband { position: absolute; left: 14%; right: 14%; top: 88px; height: 44px; border-radius: var(--rs); background: var(--panel2); pointer-events: none; }
+.wheel { position: relative; height: 220px; width: 96px; overflow-y: auto; scroll-snap-type: y mandatory; scrollbar-width: none; padding: 88px 0; -webkit-mask-image: linear-gradient(transparent, #000 32%, #000 68%, transparent); mask-image: linear-gradient(transparent, #000 32%, #000 68%, transparent); overscroll-behavior: contain; }
+.wheel::-webkit-scrollbar { display: none; }
+.wheel div { height: 44px; line-height: 44px; text-align: center; font-size: 27px; font-weight: 600; scroll-snap-align: center; color: var(--mut); font-variant-numeric: tabular-nums; transition: color .12s; cursor: pointer; }
+.wheel div.on { color: var(--tx); }
+.wsep { font-style: normal; font-size: 28px; font-weight: 700; color: var(--mut); position: relative; }
+.pkt { text-align: center; color: var(--mut); font-weight: 600; margin: 0 0 2px; }
+.dph { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; font-size: 17px; font-weight: 650; }
+.dpg { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+.dpg .tile { font-size: 14px; } .dpg .tile:disabled { opacity: .22; }
+.dpw { text-align: center; color: var(--mut); font-size: 12px; font-weight: 600; padding-bottom: 2px; }
+
+.clk { padding-top: 0; overflow: hidden; }
+.clkhead { margin: 0 -16px 14px; padding: 20px 0 16px; display: flex; justify-content: center; align-items: baseline; gap: 4px; background: var(--acbg); color: var(--acink); }
+.clkhead button { font-size: 56px; font-weight: 650; line-height: 1; opacity: .55; font-variant-numeric: tabular-nums; padding: 0 4px; border-radius: 12px; }
+.clkhead button.on { opacity: 1; } .clkhead i { font-style: normal; font-size: 52px; opacity: .55; }
+.dial { position: relative; width: min(74vw, 270px); aspect-ratio: 1; margin: 6px auto 12px; border-radius: 50%; background: var(--panel); touch-action: none; user-select: none; -webkit-user-select: none; }
+.dial::after { content: ""; position: absolute; left: 50%; top: 50%; width: 8px; height: 8px; margin: -4px; border-radius: 50%; background: var(--ac); z-index: 2; }
+.dn { position: absolute; width: 38px; height: 38px; margin: -19px; border-radius: 50%; display: grid; place-items: center; font-size: 16px; font-weight: 600; color: var(--tx); z-index: 3; font-variant-numeric: tabular-nums; }
+.dn.sm { width: 30px; height: 30px; margin: -15px; font-size: 12.5px; color: var(--mut); }
+.dn.on { color: var(--acink); }
+.hand { position: absolute; left: 50%; top: 50%; height: 2px; margin-top: -1px; background: var(--ac); transform-origin: 0 50%; z-index: 1; }
+.bub { position: absolute; width: 40px; height: 40px; margin: -20px; border-radius: 50%; background: var(--acbg); z-index: 2; box-shadow: 0 6px 16px -6px rgba(0,0,0,.5); }
+.pkbtns { display: flex; align-items: center; gap: 2px; margin-top: 4px; } .pkbtns span { flex: 1; }
+.tbtn { padding: 12px 14px; color: var(--ac); font-weight: 650; font-size: 15px; letter-spacing: .02em; border-radius: var(--rs); }
+.tbtn:active { background: var(--panel); }
+.wband { border-bottom: 2px solid var(--ac); border-top: 2px solid var(--ac); background: transparent; border-radius: 0; left: 6%; right: 6%; }
+.wheel.w1 { width: 78px; } .wheel.w2 { width: 112px; } .wheel.w3 { width: 100px; }
 </style>
+<script src="boot.js"></script>
 </head>
 <body>
 <header>
@@ -207,6 +314,7 @@ button:focus-visible, .in:focus-visible { outline: 2px solid var(--ac); outline-
   </div>
   <div class="hr2">
     <button class="ic" data-act="help" aria-label="Как добавлять события"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.6 2.6 0 1 1 3.6 2.4c-.7.4-1.1.9-1.1 1.7M12 17h.01"/></svg></button>
+    <button class="ic" data-act="langsheet" aria-label="Язык"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></button>
     <button class="ic" data-act="settings" aria-label="Настройки"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg></button>
   </div>
 </header>
@@ -220,6 +328,7 @@ button:focus-visible, .in:focus-visible { outline: 2px solid var(--ac); outline-
 <button class="fab" data-act="add" aria-label="Добавить событие"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
 <div class="sheet" id="sheet"><div class="scrim" data-act="close"></div><div class="box" id="box"></div></div>
 <div id="toast" role="status"></div>
-<script src="app.js?v=2"></script>
+<script src="i18n.js?v=6"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>

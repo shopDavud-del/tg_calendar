@@ -73,7 +73,8 @@ async function handle(b: Any, uid: number, langCode?: string) {
   // Тариф и группы считаем только там, где они нужны: остальные действия — один-два запроса к базе
   let plan: Plan = "free", lim = limits("free"), groups: G[] = [], allowed = new Set<number>([uid]), adminTeams: number[] = [];
   const act = String(b.action);
-  if (!CHEAP.has(act) && !act.startsWith("admin_")) {
+  const simpleSave = act === "save" && !b.group_id && !b.id && (b.owner_id === undefined || Number(b.owner_id) === uid);   // личная новая запись: группы и тариф не нужны
+  if (!CHEAP.has(act) && !act.startsWith("admin_") && !simpleSave) {
     plan = await effectivePlan(user);
     lim = limits(plan);
     groups = await groupsOf(uid);
@@ -153,11 +154,11 @@ async function handle(b: Any, uid: number, langCode?: string) {
       } else if (!allowed.has(ownerId)) return { error: "forbidden" };
       const r = await saveEvent({
         id: b.id, owner_id: ownerId, group_id: groupId, title: String(b.title ?? ""), notes: b.notes ?? null, starts_at: String(b.starts_at),
-        ends_at: b.ends_at ?? null, all_day: !!b.all_day, repeat: b.repeat ?? null,
-        remind: Array.isArray(b.remind) ? b.remind.map(Number).filter((n: number) => Number.isFinite(n)) : null,
+        ends_at: b.ends_at && new Date(b.ends_at) > new Date(String(b.starts_at)) && new Date(b.ends_at).getTime() - new Date(String(b.starts_at)).getTime() < 366 * 86400000 ? b.ends_at : null, all_day: !!b.all_day, repeat: b.repeat ?? null,
+        remind: Array.isArray(b.remind) ? b.remind.slice(0, 12).map(Number).filter((n: number) => Number.isFinite(n) && n >= -1440 && n <= 100000) : null,
         created_by: uid, source: "app", tz: user.tz, force: !!b.force,
       });
-      return r.ok ? { ok: true, notes: r.notes } : { error: r.reason, message: r.message, conflicts: r.conflicts };
+      return r.ok ? { ok: true, notes: r.notes, id: r.ev.id } : { error: r.reason, message: r.message, conflicts: r.conflicts };
     }
     case "delete": {
       const { data: ev } = await db.from("events").select("owner_id,group_id").eq("id", b.id).maybeSingle();
@@ -191,6 +192,8 @@ async function handle(b: Any, uid: number, langCode?: string) {
       const mins = Math.max(1, Math.min(1440, Number(b.minutes) || 10));
       const occ = new Date(b.occ);
       if (isNaN(+occ)) return { error: "bad" };
+      const { count: pend } = await db.from("reminders").select("id", { count: "exact", head: true }).eq("event_id", ev.id).eq("sent", false);
+      if ((pend ?? 0) >= 20) return { error: "limit" };
       await db.from("reminders").insert({ event_id: ev.id, occurrence: occ.toISOString(), offset_min: 1_000_000 + (Math.floor(Date.now() / 60000) % 900_000), fire_at: new Date(Date.now() + mins * 60000).toISOString() });
       return { ok: true };
     }
@@ -242,7 +245,8 @@ async function handle(b: Any, uid: number, langCode?: string) {
     }
     case "mark": {
       const day = String(b.day);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return { error: "bad" };
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || Math.abs(new Date(day).getTime() - Date.now()) > 4 * 366 * 86400000) return { error: "bad" };
+      if (b.mark) { const { count } = await db.from("day_marks").select("day", { count: "exact", head: true }).eq("user_id", uid); if ((count ?? 0) >= 4000) return { error: "limit" }; }
       if (!b.mark) await db.from("day_marks").delete().eq("user_id", uid).eq("day", day);
       else if (["done", "miss", "star"].includes(b.mark)) await db.from("day_marks").upsert({ user_id: uid, day, mark: b.mark });
       else return { error: "bad" };

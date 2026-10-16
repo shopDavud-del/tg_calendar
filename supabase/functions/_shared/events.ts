@@ -2,6 +2,7 @@
 import { db } from "./db.ts";
 import { limits, type Plan } from "./plans.ts";
 import { effectivePlan } from "./groups.ts";
+import { background } from "./bg.ts";
 import { expand } from "./time.ts";
 import { reschedule, type Ev } from "./reminders.ts";
 import { remindDefaults, withDefaults } from "./settings.ts";
@@ -58,34 +59,28 @@ async function serviceMinutes(ownerId: number, title: string) {
 }
 
 export async function saveEvent(inp: Input): Promise<Result> {
-  const { plan } = await planForOwner(inp.group_id ?? inp.owner_id);
-  const lim = limits(plan);
-  const notes: string[] = [];
-  if (inp.group_id && !lim.team) return { ok: false, reason: "team", message: "Командный режим доступен в тарифе Team." };
   const title = (inp.title ?? "").trim().slice(0, 200);
   if (!title || isNaN(Date.parse(inp.starts_at))) return { ok: false, reason: "invalid", message: "Нужны название и дата" };
+  const notes: string[] = [];
+  // независимые запросы выполняем одновременно: так запись сохраняется заметно быстрее
+  const [{ plan }, cnt, stRow, sv] = await Promise.all([
+    planForOwner(inp.group_id ?? inp.owner_id),
+    inp.id ? Promise.resolve(null) : db.from("events").select("id", { count: "exact", head: true }).eq("owner_id", inp.owner_id).or(`repeat.not.is.null,starts_at.gte.${new Date().toISOString()}`),
+    inp.remind == null && inp.owner_id > 0 ? db.from("users").select("settings").eq("id", inp.owner_id).maybeSingle() : Promise.resolve(null),
+    !inp.ends_at && !inp.all_day ? serviceMinutes(inp.owner_id, title) : Promise.resolve(null),
+  ]);
+  const lim = limits(plan);
+  if (inp.group_id && !lim.team) return { ok: false, reason: "team", message: "Командный режим доступен в тарифе Team." };
+  if (cnt && (cnt.count ?? 0) >= lim.maxEvents) return { ok: false, reason: "limit", message: `В бесплатном тарифе до ${lim.maxEvents} активных событий.` };
 
-  if (!inp.id) {
-    const { count } = await db.from("events").select("id", { count: "exact", head: true })
-      .eq("owner_id", inp.owner_id).or(`repeat.not.is.null,starts_at.gte.${new Date().toISOString()}`);
-    if ((count ?? 0) >= lim.maxEvents)
-      return { ok: false, reason: "limit", message: `В бесплатном тарифе до ${lim.maxEvents} активных событий.` };
-  }
   let repeat = inp.repeat ?? null;
   if (repeat && !lim.repeat) { repeat = null; notes.push("Повторы доступны в тарифе Plus — событие добавлено без повтора."); }
-  let remind: number[];
-  if (inp.remind == null) {   // null = взять из настроек владельца; [] = «без напоминания»
-    const st = inp.owner_id > 0 ? (await db.from("users").select("settings").eq("id", inp.owner_id).maybeSingle()).data?.settings : null;
-    remind = remindDefaults(withDefaults(st), inp.all_day);
-  } else remind = inp.remind;
+  let remind: number[] = inp.remind == null ? remindDefaults(withDefaults(stRow?.data?.settings), inp.all_day) : inp.remind;   // null = из настроек; [] = «без напоминания»
   remind = [...new Set(remind)].slice(0, lim.maxReminders);
   if (inp.remind && inp.remind.length > lim.maxReminders) notes.push(`В вашем тарифе до ${lim.maxReminders} напоминаний на событие.`);
 
   let endsAt = inp.ends_at ?? null;
-  if (!endsAt && !inp.all_day) {
-    const sv = await serviceMinutes(inp.owner_id, title);
-    if (sv) { endsAt = new Date(new Date(inp.starts_at).getTime() + sv.minutes * 60000).toISOString(); notes.push(`Услуга «${sv.name}»: ${sv.minutes} мин.`); }
-  }
+  if (!endsAt && sv) { endsAt = new Date(new Date(inp.starts_at).getTime() + sv.minutes * 60000).toISOString(); notes.push(`Услуга «${sv.name}»: ${sv.minutes} мин.`); }
   if (!inp.all_day && !inp.force) {
     const cf = await findConflicts(inp.owner_id, inp.starts_at, endsAt, inp.id);
     if (cf.length) return { ok: false, reason: "conflict", message: "Это время уже занято", conflicts: cf };
@@ -100,12 +95,12 @@ export async function saveEvent(inp: Input): Promise<Result> {
   if (error || !data) { console.error(error); return { ok: false, reason: "invalid", message: "Не удалось сохранить" }; }
   const ev = data as Ev;
   await reschedule(ev);
-  try { await pushGoogle(ev); } catch (err) { console.error("google push", err); }   // ждём: Edge-функция обрывает фоновые задачи после ответа
+  background(pushGoogle(ev));   // Google — после ответа, пользователь не ждёт
   return { ok: true, ev, notes };
 }
 
 export async function removeEvent(id: string, ownerId: number) {
   const { data } = await db.from("events").delete().eq("id", id).eq("owner_id", ownerId).select().maybeSingle();
-  if (data) { try { await deleteGoogle(data as Ev); } catch (err) { console.error("google delete", err); } }
+  if (data) background(deleteGoogle(data as Ev));
   return !!data;
 }
