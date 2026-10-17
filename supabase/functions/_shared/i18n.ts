@@ -1,14 +1,17 @@
 // Язык сообщений бота. Тексты в коде написаны по-русски; для остальных языков они заменяются по словарю
 // (самые длинные фразы первыми) плюс правила для чисел («за 30 мин»). Непереведённое остаётся по-русски.
-import { AsyncLocalStorage } from "node:async_hooks";
 export const LANGS = ["ru", "en", "uz", "de", "ja", "tr"] as const;
 export type Lang = typeof LANGS[number];
 export const LOCALE: Record<Lang, string> = { ru: "ru-RU", en: "en-GB", uz: "uz-UZ", de: "de-DE", ja: "ja-JP", tr: "tr-TR" };
 export const LANG_NAMES: Record<Lang, string> = { ru: "Русский", en: "English", uz: "Oʻzbekcha", de: "Deutsch", ja: "日本語", tr: "Türkçe" };
-const als = new AsyncLocalStorage<{ lang: Lang }>();
+// Язык запроса хранится в AsyncLocalStorage (разные запросы не мешают друг другу). Если среда его не поддерживает — запасной вариант.
+// deno-lint-ignore no-explicit-any
+let als: any = null;
+try { const m = await import("node:async_hooks"); als = new m.AsyncLocalStorage(); } catch (_e) { als = null; }
+let fallback: Lang = "ru";
 export const asLang = (l: unknown): Lang => (LANGS as readonly string[]).includes(String(l)) ? (l as Lang) : "ru";
-export const withLang = <T>(lang: Lang, fn: () => T): T => als.run({ lang }, fn);
-export const getLang = (): Lang => als.getStore()?.lang ?? "ru";
+export const withLang = <T>(lang: Lang, fn: () => T): T => { if (als) return als.run({ lang }, fn); fallback = lang; return fn(); };
+export const getLang = (): Lang => (als ? als.getStore()?.lang : fallback) ?? "ru";
 export const locale = () => LOCALE[getLang()];
 /** Язык по коду Telegram (language_code) */
 export const fromTelegram = (code?: string): Lang => { const c = (code ?? "").slice(0, 2).toLowerCase(); return (LANGS as readonly string[]).includes(c) ? (c as Lang) : "ru"; };

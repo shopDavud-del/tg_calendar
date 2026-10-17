@@ -47,6 +47,6 @@ Call 'setMyCommands' @{ commands = @(
 ) } | ConvertTo-Json -Compress
 
 Write-Host '-> кнопка меню'
-Call 'setChatMenuButton' @{ menu_button = @{ type = 'web_app'; text = 'Календарь'; web_app = @{ url = $cfg['APP_URL'] } } } | ConvertTo-Json -Compress
+Call 'setChatMenuButton' @{ menu_button = @{ type = 'web_app'; text = 'Календарь'; web_app = @{ url = (($cfg['APP_URL'] -replace '/+$','') + '/?v=3.3.1') } } } | ConvertTo-Json -Compress
 
 Write-Host 'Готово.'

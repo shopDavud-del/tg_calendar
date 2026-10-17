@@ -1,5 +1,6 @@
 "use strict";
 /* ============================ УТИЛИТЫ ============================ */
+const APP_VER = "3.3.1";
 const TG = window.Telegram && Telegram.WebApp;
 const Q = new URLSearchParams(location.search);
 const initData = (TG && TG.initData) || "";
@@ -49,16 +50,37 @@ const S = {
   limits: { maxReminders: 1, repeat: false, ics: false, google: false, team: false, themes: ["midnight", "black", "indigo"] },
   plans: null, groups: [], ctx: null, team: null, scope: { t: "me" }, themes: Object.keys(THEMES), ics: null, bot: "",
   events: [], by: {}, marks: {}, sel: sod(new Date()), view: "month", key: "", ready: false, busy: false,
-  spage: null, sig: "", clients: null, cq: "", ref: null, tour: 0, acc: {}, cr: { n: 30, u: 1 }, svcMin: 60, services: null, sheetKey: null,
+  spage: null, lastErr: "", sig: "", clients: null, cq: "", ref: null, tour: 0, acc: {}, cr: { n: 30, u: 1 }, svcMin: 60, services: null, sheetKey: null,
 };
 
 async function api(action, data = {}) {
   if (DEMO) return demoApi(action, data);
-  const r = await fetch(CFG.API, { method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ action, initData, tz: Intl.DateTimeFormat().resolvedOptions().timeZone, ...data }) });
-  if (!r.ok) throw new Error("http " + r.status);
+  if (!CFG.API || /ВАШ_|YOUR_|PROJECT_REF/.test(CFG.API)) { S.lastErr = "в файле config.js не заполнен адрес API (вместо ВАШ_PROJECT_REF нужен ваш ref)"; throw new Error("config"); }
+  let r;
+  try {
+    r = await fetch(CFG.API, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action, initData, tz: Intl.DateTimeFormat().resolvedOptions().timeZone, ...data }) });
+  } catch (e) { S.lastErr = "нет сети или запрос заблокирован: " + ((e && e.message) || e); throw e; }
+  if (!r.ok) {
+    let d = ""; try { const j = await r.json(); d = j.detail || j.error || ""; } catch (_) {}
+    S.lastErr = `сервер ответил ${r.status}${d ? ": " + d : ""}`; throw new Error("http " + r.status);
+  }
   return r.json();
 }
+const hintFor = () => {
+  const e = S.lastErr || "";
+  if (/config\.js/.test(e)) return "Откройте файл docs/config.js в репозитории и впишите ваш Project ref вместо ВАШ_PROJECT_REF.";
+  if (/404/.test(e)) return "Функция api не найдена на сервере: выполните npx supabase functions deploy bot api cron google ics --use-api.";
+  if (/401|auth/.test(e)) return "Сервер не принял подпись Telegram: проверьте секрет BOT_TOKEN (npx supabase secrets set --env-file .env) и откройте приложение из бота.";
+  if (/500|server/.test(e)) return "Ошибка на сервере: Supabase → Edge Functions → api → Logs. Часто причина в невыполненных SQL-миграциях или пропущенных секретах.";
+  if (/сети|заблокирован/.test(e)) return "Запрос не дошёл до сервера: проверьте адрес в config.js и интернет.";
+  return "";
+};
+const diagText = () => {
+  const host = (CFG.API || "").replace(/^https?:\/\//, "").split("/")[0];
+  return [`Версия приложения: ${APP_VER}`, `Адрес API: ${host || "не задан"}`, `Telegram: ${TG ? "да" : "нет"} · initData: ${initData ? "есть" : "нет"}`, `Платформа: ${(TG && TG.platform) || "?"}`, `Язык: ${I18N.lang}`, `Последняя ошибка: ${S.lastErr || "нет"}`, `Страница: ${location.origin + location.pathname}`].join("\n");
+};
+const diagBody = () => `<pre class="codes" translate="no">${esc(diagText())}</pre>${hintFor() ? `<p class="sub" style="line-height:1.5">${esc(hintFor())}</p>` : ""}<div class="btns"><button class="btn alt" data-act="copy" data-t="${esc(diagText())}">Скопировать отчёт</button><button class="btn" data-act="retry">Повторить подключение</button></div>`;
 
 /* ---------- демо (открытие в браузере без Telegram и themes.html) ---------- */
 const DEMO_EVS = (() => {
@@ -123,7 +145,7 @@ async function init(soft) {
     else await load(true);
   } catch (e) {
     console.error(e);
-    if (!S.ready) $("#main").innerHTML = `<div class="empty">Не удалось загрузить календарь.<br><br><button class="btn sm" data-act="retry">Повторить</button><div class="sub" style="margin-top:12px">Если повторяется, проверьте адрес API в config.js</div></div>`;
+    if (!S.ready) $("#main").innerHTML = `<div class="panel"><h2 style="margin:0 0 8px">Не удалось связаться с сервером</h2><div class="sub" style="margin-bottom:10px">Календарь не получил ответ. Вот что известно:</div>${diagBody()}</div>`;
   } finally { S.busy = false; }
 }
 function range() {
@@ -142,7 +164,7 @@ async function load(force, quiet) {
     if (quiet && sig === S.sig) return;   // ничего не изменилось — не перерисовываем (экран не мигает)
     S.sig = sig;
     S.events = e.events || []; S.marks = e.marks || {};
-  } catch (err) { if (!quiet) toast("Нет связи с сервером"); S.events = S.events || []; }
+  } catch (err) { if (!quiet) toast("Нет связи с сервером: " + (S.lastErr || "")); S.events = S.events || []; }
   index(); render(true);
 }
 const vis = (e) => {
@@ -657,13 +679,14 @@ function openSettings() {
     ["cli", "Клиенты", "Клиенты", cliBody, sums.cli, I('<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8"/>')],
     ["conn", "Подключения", "Подключения", integrations(), sums.conn, I('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>')],
     ["tour", "Обучение", "Обучение", tourBody, "", I('<path d="M3 5h8a3 3 0 0 1 3 3v12a3 3 0 0 0-3-3H3zM21 5h-4a3 3 0 0 0-3 3"/>')],
+    ["diag", "Диагностика", "Диагностика", diagBody(), `v${APP_VER}`, I('<path d="M4 12h4l2-6 4 12 2-6h4"/>')],
     ["data", "Данные", "Данные", dataBody, "", I('<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>')],
   ];
   const page = items.find((x) => x[0] === S.spage);
   if (page) { openSheet(`<button class="back" data-act="sback"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>Назад</button><h2>${page[2]}</h2>${page[3]}`, "settings:" + page[0]); return; }
   openSheet(`
     <h2>Настройки</h2>
-    <button class="plate" data-act="tariffs"><div><b>Подписки</b><small>Сейчас: ${esc((S.plans[p] || DEMO_PLANS[p]).title)}${p === "free" ? "" : " · до " + until}</small></div><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></button>
+    <button class="plate" data-act="tariffs"><div><b>Подписки</b><small>Сейчас: ${esc(((S.plans || DEMO_PLANS)[p] || DEMO_PLANS[p]).title)}${p === "free" ? "" : " · до " + until}</small></div><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></button>
     <div class="mgrid">${items.map((x) => `<button class="mcard" data-act="spage" data-k="${x[0]}">${x[5]}<b>${x[1]}</b><small>${x[4] || "&nbsp;"}</small></button>`).join("")}</div>
     ${S.user.is_admin ? `<button class="plate" data-act="admin"><div><b>Админ-панель</b><small>Коды подписок, статистика, Google, выдача тарифа</small></div><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></button>` : ""}`, "settings:menu");
 }
@@ -679,7 +702,7 @@ function openTariffs() {
   if (!S.ref) loadRef();
   const p = S.user.plan, until = S.user.plan_until ? fmtDate(S.user.plan_until) : "";
   openSheet(`<h2>Тарифы</h2>
-    <div class="plate static"><div><b>Сейчас: ${esc((S.plans[p] || DEMO_PLANS[p]).title)}</b><small>${p === "free" ? "Бесплатный тариф" : "Действует до " + until}</small></div></div>
+    <div class="plate static"><div><b>Сейчас: ${esc(((S.plans || DEMO_PLANS)[p] || DEMO_PLANS[p]).title)}</b><small>${p === "free" ? "Бесплатный тариф" : "Действует до " + until}</small></div></div>
     ${refBlock()}
     <h3>Код подписки</h3>
     <div class="row2" style="grid-template-columns:1fr auto"><input id="promo" class="in" placeholder="CAL-XXXX-XXXX" autocapitalize="characters" autocomplete="off"><button class="btn sm" style="width:auto;padding:0 18px" data-act="redeem">Применить</button></div>
@@ -689,7 +712,7 @@ function openTariffs() {
 }
 function planCard(k, cur, until) {
   const pr = (x) => Math.round(x * (100 - (S.user.disc_pct || 0)) / 100);
-  const P = S.plans[k] || DEMO_PLANS[k], f = { free: ["До 40 активных событий", "1 напоминание", "1 группа", "3 темы"],
+  const P = (S.plans || DEMO_PLANS)[k] || DEMO_PLANS[k], f = { free: ["До 40 активных событий", "1 напоминание", "1 группа", "3 темы"],
     plus: ["События без лимита", "Повторы событий", "До 3 напоминаний", "Все темы", "Подписка для Apple и Google (ICS)", "До 3 групп"],
     pro: ["Всё из Plus", "Синхронизация с Google Календарём", "До 5 напоминаний", "Группы без лимита"],
     team: ["Всё из Pro", "Режим салона: вкладка на каждого сотрудника", "Запись на сотрудника по @нику", "Админ видит записи всех", "Напоминания и в группу, и сотруднику лично", "Все участники группы получают Pro"] }[k];
@@ -808,7 +831,7 @@ document.addEventListener("click", async (e) => {
   const el = e.target.closest("[data-act]"); if (!el) return;
   if (lpFired) { lpFired = false; return; }
   const a = el.dataset.act, S0 = S.sel;
-  if (a === "retry") { S.ready ? render() : init(); return; }
+  if (a === "retry") { S.lastErr = ""; closeSheet(); S.ready ? (load(true), render()) : init(); return; }
   switch (a) {
     case "prev": case "next": {
       const n = a === "next" ? 1 : -1;

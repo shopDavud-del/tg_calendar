@@ -2,7 +2,7 @@
 import { db } from "../_shared/db.ts";
 import { asLang, fromTelegram, getLang, locale, withLang, type Lang } from "../_shared/i18n.ts";
 import { env } from "../_shared/env.ts";
-import { esc, kb, send } from "../_shared/tg.ts";
+import { esc, kb, send, appLink } from "../_shared/tg.ts";
 import { schedule, type Ev } from "../_shared/reminders.ts";
 import { expand, fmtWhen, localParts, zonedToUtc } from "../_shared/time.ts";
 import { withDefaults } from "../_shared/settings.ts";
@@ -114,7 +114,7 @@ async function digests() {
       if (items.length < st.digest_min) continue;
       const lines = items.slice(0, 20).map((i) => `• ${i.ev.all_day ? "весь день" : hm(i.start, u.tz)} — ${esc(i.ev.title)}`);
       const head = kind === "morning" ? `☀️ <b>План на сегодня</b> · ${items.length}` : `🌙 <b>Завтра</b> · ${fmtWhen(from, u.tz, true).replace(", весь день", "")} · ${items.length}`;
-      await withLang(asLang(st.lang), () => send(u.id, `${head}\n${lines.join("\n")}${items.length > 20 ? `\n…и ещё ${items.length - 20}` : ""}`, kb([[{ text: "📅 Открыть календарь", web_app: env("APP_URL") }]])));
+      await withLang(asLang(st.lang), () => send(u.id, `${head}\n${lines.join("\n")}${items.length > 20 ? `\n…и ещё ${items.length - 20}` : ""}`, kb([[{ text: "📅 Открыть календарь", web_app: appLink() }]])));
       sent++;
     }
   }

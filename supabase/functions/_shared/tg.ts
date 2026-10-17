@@ -28,4 +28,7 @@ export const kb = (rows: { text: string; data?: string; url?: string; web_app?: 
     }))),
   },
 });
+export const APP_BUILD = "3.3.1";
 export const appUrl = () => env("APP_URL");
+/** Адрес приложения с номером версии: Telegram и GitHub Pages не покажут старую закэшированную страницу. */
+export const appLink = () => `${env("APP_URL").replace(/\/+$/, "")}/?v=${APP_BUILD}`;

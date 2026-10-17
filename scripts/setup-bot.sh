@@ -31,5 +31,5 @@ curl -s "$API/setMyCommands" -H 'content-type: application/json' -d '{"commands"
 
 echo "→ кнопка меню (открывает календарь)"
 curl -s "$API/setChatMenuButton" -H 'content-type: application/json' \
-  -d "{\"menu_button\":{\"type\":\"web_app\",\"text\":\"Календарь\",\"web_app\":{\"url\":\"${APP_URL}\"}}}"; echo
+  -d "{\"menu_button\":{\"type\":\"web_app\",\"text\":\"Календарь\",\"web_app\":{\"url\":\"${APP_URL%/}/?v=3.3.1\"}}}"; echo
 echo "Готово."

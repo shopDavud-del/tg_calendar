@@ -2,7 +2,7 @@
 import { db } from "../_shared/db.ts";
 import { asLang, fromTelegram, getLang, locale, withLang, type Lang } from "../_shared/i18n.ts";
 import { env } from "../_shared/env.ts";
-import { answerCb, edit, esc, kb, send, tg } from "../_shared/tg.ts";
+import { answerCb, edit, esc, kb, send, tg, appLink } from "../_shared/tg.ts";
 import { ensureUser, deleteAccount } from "../_shared/account.ts";
 import { looksLikeTrigger, parseEvent, remindOf, TRIGGER_WORDS } from "../_shared/parse.ts";
 import { expand, fmtWhen, localParts, validTz, zonedToUtc } from "../_shared/time.ts";
@@ -164,13 +164,13 @@ async function privateCommand(m: Any, cmd: string, arg: string, user: Any) {
       const fresh = Date.now() - new Date(user.created_at).getTime() < 120_000;
       const trial = fresh && TRIAL_DAYS > 0 && planOf(user) === "pro";
       await send(chat, `<b>Календарь в Telegram</b>\nПишите события обычными словами, я запомню и напомню вовремя.\n\n${trial ? `🎁 Вам открыт Pro на ${TRIAL_DAYS} дней.\n\n` : ""}Попробуйте прямо сейчас:\n<code>добавь стоматолог завтра в 15:00</code>`,
-        kb([[{ text: "📅 Открыть календарь", web_app: env("APP_URL") }], [{ text: "Как пользоваться", data: "help" }]]));
+        kb([[{ text: "📅 Открыть календарь", web_app: appLink() }], [{ text: "Как пользоваться", data: "help" }]]));
       if (user.tz === "UTC") await send(chat, "Часовой пояс пока не задан. Откройте календарь — он определится сам. Или напишите, например: <code>/tz Asia/Tashkent</code>");
       return;
     }
     case "/help": return send(chat, HELP);
     case "/words": return send(chat, WORDS);
-    case "/app": return send(chat, "Ваш календарь:", kb([[{ text: "📅 Открыть", web_app: env("APP_URL") }]]));
+    case "/app": return send(chat, "Ваш календарь:", kb([[{ text: "📅 Открыть", web_app: appLink() }]]));
     case "/tz": {
       if (!arg || !validTz(arg.trim())) return send(chat, "Укажите пояс так: <code>/tz Asia/Tashkent</code>\nСписок: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones");
       await db.from("users").update({ tz: arg.trim() }).eq("id", user.id);
@@ -399,7 +399,7 @@ async function createFromParsed(chat: number, replyTo: number | null, inp: Omit<
   if (cl) lines.push(`👤 ${esc([cl.name, cl.phone, cl.username ? "@" + cl.username : ""].filter(Boolean).join(" · ") || "Клиент")}`);
   const rows = [[{ text: "↩️ Отменить", data: `undo:${ev.id}` }]] as { text: string; data?: string; web_app?: string }[][];
   if (cl) rows.push([{ text: "📨 Заготовка клиенту", data: `cd:${ev.id}` }]);
-  if (isPrivate) rows[0].push({ text: "📅 Календарь", web_app: env("APP_URL") });
+  if (isPrivate) rows[0].push({ text: "📅 Календарь", web_app: appLink() });
   const extra = kb(rows as never);
   return editMsg ? edit(chat, editMsg, lines.join("\n"), extra) : send(chat, lines.join("\n"), { reply_to_message_id: replyTo ?? undefined, ...extra });
 }
@@ -621,7 +621,7 @@ async function paid(m: Any) {
   const d = new Date(until).toLocaleDateString(locale(), { timeZone: user.tz });
   await send(m.chat.id, sp.is_recurring && !sp.is_first_recurring
     ? `🔄 Подписка <b>${PLANS[plan as "plus"].title}</b> продлена до ${d}. Спасибо!`
-    : `🎉 Готово! Тариф <b>${PLANS[plan as "plus"].title}</b> активен до ${d}.`, kb([[{ text: "📅 Открыть календарь", web_app: env("APP_URL") }]]));
+    : `🎉 Готово! Тариф <b>${PLANS[plan as "plus"].title}</b> активен до ${d}.`, kb([[{ text: "📅 Открыть календарь", web_app: appLink() }]]));
   await send(ADMIN(), `#оплата_подписки\n💰 +${sp.total_amount}⭐ · ${PLANS[plan as "plus"].title} · ${period === "month" ? "месяц" : "год"}${sp.is_recurring && !sp.is_first_recurring ? " · продление" : ""}${dflag ? " · со скидкой " + dflag.slice(1) + "%" : ""}\nuser: <a href="tg://user?id=${uid}">${uid}</a>\n<code>${esc(sp.telegram_payment_charge_id)}</code>`);
 }
 

@@ -11,6 +11,7 @@ import { authUrl, syncAll } from "../_shared/google.ts";
 import { applyPatch, withDefaults } from "../_shared/settings.ts";
 import { effectivePlan, isGroupAdmin, isMember } from "../_shared/groups.ts";
 import { createCodes, redeem } from "../_shared/promo.ts";
+import { APP_BUILD } from "../_shared/tg.ts";
 import { asLang, fromTelegram, withLang } from "../_shared/i18n.ts";
 import { draftText } from "../_shared/clients.ts";
 import type { Ev } from "../_shared/reminders.ts";
@@ -31,6 +32,7 @@ type Any = any;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: CORS });
+  if (req.method === "GET") return json({ ok: true, service: "calendar-api", version: APP_BUILD });   // проверка, что функция развёрнута
   if (req.method !== "POST") return json({ error: "method" }, 405);
   let body: Any;
   try { body = await req.json(); } catch { return json({ error: "bad_json" }, 400); }
@@ -40,7 +42,7 @@ Deno.serve(async (req) => {
   if (!rt || now0 - rt.t > 60_000) { rate.set(tgUser.id, { n: 1, t: now0 }); if (rate.size > 5000) rate.clear(); }
   else if (++rt.n > 120) return json({ error: "rate" }, 429);
   try { return json(await handle(body, tgUser.id, tgUser.language_code)); }
-  catch (e) { console.error(e); return json({ error: "server" }, 500); }
+  catch (e) { console.error(e); return json({ error: "server", detail: tgUser.id === Number(env("ADMIN_ID")) ? String((e as Error)?.message ?? e).slice(0, 240) : undefined }, 500); }
 });
 
 interface G { id: number; title: string; mode: string; isAdmin: boolean; sponsor: number | null; members?: { id: number; name: string; username: string | null }[] }
