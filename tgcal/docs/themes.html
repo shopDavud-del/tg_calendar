@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Раскадровка тем</title>
+<link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0c0c0e; color: #ececf0; font: 500 15px/1.4 Onest, system-ui, sans-serif; }
+  header { position: sticky; top: 0; z-index: 5; background: #0c0c0ee8; backdrop-filter: blur(10px); padding: 14px 20px; border-bottom: 1px solid #222; display: flex; flex-wrap: wrap; gap: 14px 28px; align-items: center; }
+  h1 { margin: 0; font-size: 20px; } 
+  .grp { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; } .grp > span { color: #8d8d96; font-size: 13px; margin-right: 4px; }
+  button { font: inherit; color: #c9c9d0; background: #1a1a1e; border: 0; border-radius: 10px; padding: 8px 13px; cursor: pointer; }
+  button.on { background: #e6e6ee; color: #111; }
+  main { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 28px 20px; padding: 24px 20px 60px; max-width: 1500px; margin: 0 auto; }
+  .card { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .phone { width: 330px; height: 640px; border-radius: 38px; border: 8px solid #1b1b1f; overflow: hidden; background: #000; box-shadow: 0 24px 50px -20px #000; }
+  iframe { width: 100%; height: 100%; border: 0; display: block; }
+  .name { font-weight: 650; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+  .dot { width: 14px; height: 14px; border-radius: 50%; border: 1px solid #fff3; }
+  .tag { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 20px; background: #26262c; color: #a9a9b3; }
+  .tag.free { background: #1e3a2b; color: #7fe3ab; }
+  p.note { max-width: 700px; margin: 18px auto 0; text-align: center; color: #8d8d96; font-size: 13.5px; padding: 0 20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Раскадровка тем</h1>
+  <div class="grp"><span>Вид</span><button data-g="view" data-v="month" class="on">Месяц</button><button data-g="view" data-v="week">Неделя</button><button data-g="view" data-v="day">День</button></div>
+  <div class="grp"><span>Отметки</span><button data-g="mark" data-v="scribble" class="on">Зигзаг</button><button data-g="mark" data-v="stroke">Мазок</button><button data-g="mark" data-v="dot">Точка</button></div>
+  <div class="grp"><span>Выбранный день</span><button data-g="sel" data-v="fill" class="on">Заливка</button><button data-g="sel" data-v="ring">Кольцо</button></div>
+  <div class="grp"><span>Многодневные</span><button data-g="multi" data-v="bars" class="on">Линия</button><button data-g="multi" data-v="frame">Рамка</button><button data-g="multi" data-v="ribbon">Лента</button><button data-g="multi" data-v="ends">Метки</button><button data-g="multi" data-v="dots">Точка и тире</button></div>
+  <div class="grp"><span>Углы</span><button data-g="radius" data-v="6">Острые</button><button data-g="radius" data-v="22" class="on">Мягкие</button><button data-g="radius" data-v="50">Круглые</button></div>
+</header>
+<p class="note">Живые экраны приложения в демо-режиме. Переключайте вид, стиль отметок и скругление сверху: все карточки обновятся.</p>
+<main id="grid"></main>
+<script>
+const T = [
+  ["midnight","Полночь","#0f0f10","#dfe5a0",1],["black","Чёрная (всё тёмное)","#000","#c9c9d1",1],["indigo","Индиго","#dde5f3","#5a4fcf",1],
+  ["emerald","Изумруд","#101a16","#f2c53d"],["bordeaux","Бордо","#17171a","#d1345b"],["teal","Бирюза","#0b1b21","#4de3c2"],
+  ["terracotta","Терракота","#e8d3c6","#d9593a"],["sage","Шалфей","#eef2e0","#5f8226"],["luxury","Люкс","#e9ecf2","#1f2a44"],
+  ["cherry-champagne","Вишня · шампань","#141417","#E6D3B3"],["cherry-honey","Вишня · медь","#141417","#D4925F"],
+  ["cherry-lavender","Вишня · лаванда","#141417","#B8B3FF"],["cherry-ice","Вишня · лёд","#141417","#A6DCF2"],["cherry","Чистая вишня","#141417","#B3263C"],
+];
+const st = { view: "month", mark: "scribble", sel: "fill", multi: "bars", radius: "22" };
+const grid = document.getElementById("grid");
+function draw() {
+  grid.innerHTML = T.map(([id, name, bg, ac, free]) => `<div class="card"><div class="phone"><iframe loading="lazy" title="${name}" src="index.html?demo=1&theme=${id}&view=${st.view}&mark=${st.mark}&sel=${st.sel}&multi=${st.multi}&radius=${st.radius}"></iframe></div>
+    <div class="name"><span class="dot" style="background:${bg}"></span><span class="dot" style="background:${ac}"></span>${name}<span class="tag ${free ? "free" : ""}">${free ? "бесплатно" : "Plus и выше"}</span></div></div>`).join("");
+}
+document.querySelectorAll("button[data-g]").forEach((b) => b.addEventListener("click", () => {
+  st[b.dataset.g] = b.dataset.v;
+  document.querySelectorAll(`button[data-g="${b.dataset.g}"]`).forEach((x) => x.classList.toggle("on", x === b));
+  draw();
+}));
+draw();
+</script>
+</body>
+</html>
