@@ -758,7 +758,7 @@ async function openAdmin() {
   openSheet(`<h2>Админ-панель</h2>
     <div class="stat"><div><b>${s.users}</b><span>пользователей</span></div><div><b>${s.paid}</b><span>с тарифом</span></div><div><b>${s.groups}</b><span>групп</span></div></div>
     <div class="stat"><div><b>${s.events}</b><span>событий</span></div><div><b>${s.stars}</b><span>⭐ получено</span></div><div><b>${s.codes}</b><span>кодов</span></div></div>
-    <p class="sub">${sched}</p>
+    <p class="sub">${sched}${s.db_mb != null ? `<br>База данных: ${s.db_mb} МБ из 500` : ""}</p>
     <h3>Google: проверка настройки</h3>
     <div class="plan"><div class="sub" style="line-height:1.6">${gd.configured ? "✅ GOOGLE_CLIENT_ID и SECRET заданы" : "⚠️ Не заданы GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET (supabase secrets set)"}<br>Client ID: <span translate="no">${esc(gd.client_id_tail || "—")}</span><br>Доступ (scope): <span translate="no">${esc((gd.scope || "").replace("https://www.googleapis.com/auth/", ""))}</span><br>Подключено пользователей: ${gd.connected || 0}<br>Redirect URI в консоли Google должен быть:</div><code class="url" translate="no">${esc(gd.redirect || "")}</code><button class="btn alt sm" style="margin-top:8px" data-act="copy" data-t="${esc(gd.redirect || "")}">Скопировать</button><div class="sub" style="margin-top:8px">Также включите «Google Calendar API» в проекте Google Cloud и добавьте свою почту в Test users.</div></div>
     <h3>Создать коды подписки</h3>

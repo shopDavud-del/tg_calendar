@@ -17,6 +17,7 @@ import type { Ev } from "../_shared/reminders.ts";
 
 // Действия, которым не нужны ни группы, ни тариф: выполняются без лишних запросов
 const CHEAP = new Set(["referral", "marks", "mark", "services", "service_save", "service_delete", "redeem", "invoice", "google_disconnect", "ics_rotate", "delete_me", "google_sync"]);
+const rate = new Map<number, { n: number; t: number }>();   // не больше 120 запросов в минуту на человека
 const redeemFails = new Map<number, { n: number; t: number }>();   // защита кодов от подбора
 
 const CORS = {
@@ -35,6 +36,9 @@ Deno.serve(async (req) => {
   try { body = await req.json(); } catch { return json({ error: "bad_json" }, 400); }
   const tgUser = await verifyInitData(String(body.initData ?? ""), env("BOT_TOKEN"));
   if (!tgUser) return json({ error: "auth" }, 401);
+  const rt = rate.get(tgUser.id), now0 = Date.now();
+  if (!rt || now0 - rt.t > 60_000) { rate.set(tgUser.id, { n: 1, t: now0 }); if (rate.size > 5000) rate.clear(); }
+  else if (++rt.n > 120) return json({ error: "rate" }, 429);
   try { return json(await handle(body, tgUser.id, tgUser.language_code)); }
   catch (e) { console.error(e); return json({ error: "server" }, 500); }
 });
@@ -66,6 +70,7 @@ async function groupsOf(uid: number): Promise<G[]> {
 
 async function handle(b: Any, uid: number, langCode?: string) {
   const user = await ensureUser(uid, typeof b.tz === "string" ? b.tz : undefined);
+  if ((user as Any).banned) return { error: "banned" };
   const isAdmin = uid === Number(env("ADMIN_ID"));
   const settings = withDefaults(user.settings);
   if (!settings.lang) {   // язык по умолчанию — язык Telegram; запоминаем, чтобы бот писал на нём же
@@ -308,7 +313,8 @@ async function handle(b: Any, uid: number, langCode?: string) {
         ]);
         const { data: pay } = await db.from("payments").select("stars").eq("refunded", false);
         const stars = (pay ?? []).reduce((s: number, p: Any) => s + p.stars, 0);
-        return { users, events, groups: groupsN, paid, codes, stars, last_tick: tick.data?.value ?? null };
+        const sz = await db.rpc("db_size");
+        return { users, events, groups: groupsN, paid, codes, stars, last_tick: tick.data?.value ?? null, db_mb: sz.data ? Math.round(Number(sz.data) / 1048576) : null };
       }
       case "admin_codes": {
         const { data } = await db.from("promo_codes").select("*").order("created_at", { ascending: false }).limit(100);

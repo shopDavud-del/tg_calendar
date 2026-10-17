@@ -1,6 +1,6 @@
 // Создание/изменение событий с проверкой лимитов тарифа — общее для бота и мини-приложения.
 import { db } from "./db.ts";
-import { limits, type Plan } from "./plans.ts";
+import { limits, MAX_STORED, RETENTION_DAYS, type Plan } from "./plans.ts";
 import { effectivePlan } from "./groups.ts";
 import { background } from "./bg.ts";
 import { expand } from "./time.ts";
@@ -63,14 +63,16 @@ export async function saveEvent(inp: Input): Promise<Result> {
   if (!title || isNaN(Date.parse(inp.starts_at))) return { ok: false, reason: "invalid", message: "Нужны название и дата" };
   const notes: string[] = [];
   // независимые запросы выполняем одновременно: так запись сохраняется заметно быстрее
-  const [{ plan }, cnt, stRow, sv] = await Promise.all([
+  const [{ plan }, cnt, total, stRow, sv] = await Promise.all([
     planForOwner(inp.group_id ?? inp.owner_id),
     inp.id ? Promise.resolve(null) : db.from("events").select("id", { count: "exact", head: true }).eq("owner_id", inp.owner_id).or(`repeat.not.is.null,starts_at.gte.${new Date().toISOString()}`),
+    inp.id ? Promise.resolve(null) : db.from("events").select("id", { count: "exact", head: true }).eq("owner_id", inp.owner_id),
     inp.remind == null && inp.owner_id > 0 ? db.from("users").select("settings").eq("id", inp.owner_id).maybeSingle() : Promise.resolve(null),
     !inp.ends_at && !inp.all_day ? serviceMinutes(inp.owner_id, title) : Promise.resolve(null),
   ]);
   const lim = limits(plan);
   if (inp.group_id && !lim.team) return { ok: false, reason: "team", message: "Командный режим доступен в тарифе Team." };
+  if (total && (total.count ?? 0) >= (MAX_STORED[plan] ?? 400)) return { ok: false, reason: "limit", message: `Достигнут предел хранения: ${MAX_STORED[plan] ?? 400} записей. Прошедшие записи удаляются автоматически (через ${plan === "free" ? RETENTION_DAYS.free : RETENTION_DAYS.paid} дн.), можно удалить лишнее вручную.` };
   if (cnt && (cnt.count ?? 0) >= lim.maxEvents) return { ok: false, reason: "limit", message: `В бесплатном тарифе до ${lim.maxEvents} активных событий.` };
 
   let repeat = inp.repeat ?? null;

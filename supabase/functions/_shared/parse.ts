@@ -15,6 +15,7 @@ const STEMS = ["добав", "запомн", "назнач", "запиш", "за
 const EN_WORDS = ["add", "remind", "schedule", "book", "create", "save", "set", "note", "plan", "appointment", "remember"];
 const TRIGGER_RE = new RegExp(`^\\s*(?:/add(?:@\\w+)?\\s*|(?:${STEMS.join("|")})[а-яё]*[\\s,:–-]*|(?:${EN_WORDS.join("|")})\\b[\\s,:–-]*)`, "i");
 
+const PART_RE = /(?<![а-яё])(утром|днём|днем|вечером|ночью)(?![а-яё])/i;
 const REPEAT_RULES: [RegExp, string][] = [
   [/(?:каждый\s+день|ежедневно|каждые\s+сутки)/i, "daily"],
   [/(?:каждую\s+неделю|еженедельно|каждый\s+(?:понедельник|вторник|четверг|пятницу|субботу|воскресенье)|каждую\s+(?:среду|пятницу|субботу))/i, "weekly"],
@@ -94,6 +95,7 @@ export function parseEvent(raw: string, tz: string, now = new Date()): Parsed {
   }
 
   // дата и время
+  const part = t.match(PART_RE);   // «утром / днём / вечером / ночью» без точного времени
   if (!starts) {
     const off = tzOffsetMin(now, tz);
     const bad = (r: { text: string }) => /^(день|дня|дни|дней|ночь|утро|вечер)$/i.test(r.text.trim());
@@ -119,6 +121,12 @@ export function parseEvent(raw: string, tz: string, now = new Date()): Parsed {
     }
   }
 
+  if (part) {
+    const hour = ({ "утром": 9, "днём": 13, "днем": 13, "вечером": 19, "ночью": 22 } as Record<string, number>)[part[1].toLowerCase()];
+    if (starts && allDay) { const lp = localParts(starts, tz); starts = zonedToUtc(lp.y, lp.m, lp.d, hour, 0, tz); allDay = false; }
+    else if (!starts) { const lp = localParts(now, tz); let s = zonedToUtc(lp.y, lp.m, lp.d, hour, 0, tz); if (s <= now) s = zonedToUtc(lp.y, lp.m, lp.d + 1, hour, 0, tz); starts = s; allDay = false; }
+    t = t.replace(PART_RE, " ");
+  }
   let title = t.replace(/\s+/g, " ").replace(/^[\s,.:;–—-]+|[\s,.:;–—-]+$/g, "");
   for (let i = 0; i < 3; i++) title = title.replace(/^(?:мне|нам|ему|ей|им|себе|me|us|to|that|на|в|во|о|про|что)\s+/i, "");   // «напомни мне про…» → «…»
   title = title.replace(/\s+(?:в|на|во|к|с|до|on|at|in|for|to)$/i, "").trim();

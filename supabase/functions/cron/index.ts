@@ -8,6 +8,7 @@ import { expand, fmtWhen, localParts, zonedToUtc } from "../_shared/time.ts";
 import { withDefaults } from "../_shared/settings.ts";
 import { mention } from "../_shared/groups.ts";
 import { same } from "../_shared/auth.ts";
+import { RETENTION_DAYS } from "../_shared/plans.ts";
 import { draftLinks, draftText } from "../_shared/clients.ts";
 
 const KEEPALIVE_DAYS = 5;
@@ -24,6 +25,7 @@ Deno.serve(async (req) => {
   try { out.digests = await digests(); } catch (e) { console.error("digests", e); }
   try { await nextRepeats(); } catch (e) { console.error("repeats", e); }
   try { await housekeeping(); } catch (e) { console.error("house", e); }
+  try { out.maintenance = await maintenance(); } catch (e) { console.error("maintenance", e); }
   try { out.keepalive = await keepalive(); } catch (e) { console.error("keepalive", e); }
   return new Response(JSON.stringify(out), { headers: { "content-type": "application/json" } });
 });
@@ -134,6 +136,23 @@ async function housekeeping() {
   await db.from("pending").delete().lt("created_at", new Date(Date.now() - 2 * 86400000).toISOString());
   await db.from("reminders").delete().eq("sent", true).lt("fire_at", new Date(Date.now() - 7 * 86400000).toISOString());
   await db.from("digest_log").delete().lt("day", new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10));
+}
+
+/** Раз в сутки: удаляем устаревшие записи и следим за размером базы (предупреждение администратору на 70 / 85 / 95%). */
+async function maintenance() {
+  const { data: last } = await db.from("meta").select("value").eq("key", "last_maint").maybeSingle();
+  if (last && Date.now() - new Date(last.value as string).getTime() < 20 * 3600_000) return null;
+  const now = new Date().toISOString();
+  await db.from("meta").upsert({ key: "last_maint", value: now, updated_at: now });
+  const { data: removed } = await db.rpc("cleanup_old", { free_days: RETENTION_DAYS.free, paid_days: RETENTION_DAYS.paid });
+  const { data: size } = await db.rpc("db_size");
+  const limitMb = Number(Deno.env.get("DB_LIMIT_MB") ?? 500), mb = Number(size) / 1048576, pct = Math.round((mb / limitMb) * 100);
+  const level = pct >= 95 ? 95 : pct >= 85 ? 85 : pct >= 70 ? 70 : 0;
+  const { data: al } = await db.from("meta").select("value").eq("key", "db_alert").maybeSingle();
+  const prev = Number(al?.value ?? 0);
+  if (level > prev) await send(Number(env("ADMIN_ID")), `⚠️ <b>База Supabase заполнена на ${pct}%</b> (${mb.toFixed(0)} МБ из ${limitMb})\nЧто сделать: сократить срок хранения (RETENTION_DAYS в plans.ts), удалить неактивных пользователей или перейти на платный тариф Supabase.`);
+  if (level !== prev) await db.from("meta").upsert({ key: "db_alert", value: String(level), updated_at: now });
+  return { removed, pct };
 }
 
 /** Раз в 5 дней пишем администратору и обновляем запись в базе — чтобы бесплатный проект Supabase не «уснул». */

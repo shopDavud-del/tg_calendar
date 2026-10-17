@@ -35,6 +35,9 @@ export const PLANS = {
   },
 } as const;
 
+// Хранение: чтобы бесплатная база Supabase (500 МБ) не переполнялась
+export const RETENTION_DAYS = { free: 90, paid: 365 };            // через сколько дней удаляются прошедшие разовые события
+export const MAX_STORED: Record<string, number> = { free: 400, plus: 4000, pro: 6000, team: 20000 };   // всего записей на календарь (с прошедшими)
 export const TRIAL_DAYS = 7;
 export const REFUND_WINDOW_DAYS = 3;   // возврат только за последнюю оплату и только в течение N дней         // пробный Pro для новых пользователей (0 — отключить)
 export const PERIOD_DAYS = { month: 30, year: 365 } as const;

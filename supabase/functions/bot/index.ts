@@ -34,13 +34,13 @@ Deno.serve(async (req) => {
 // deno-lint-ignore no-explicit-any
 type Any = any;
 
-const ucache = new Map<number, { lang: Lang; t: number }>();
+const ucache = new Map<number, { lang: Lang; t: number; banned: boolean }>();
 async function userLang(uid: number, code?: string): Promise<Lang> {
   const c = ucache.get(uid);
   if (c && Date.now() - c.t < 300_000) return c.lang;
-  const { data } = await db.from("users").select("settings").eq("id", uid).maybeSingle();
+  const { data } = await db.from("users").select("settings,banned").eq("id", uid).maybeSingle();
   const l = data?.settings?.lang ? asLang(data.settings.lang) : fromTelegram(code);
-  ucache.set(uid, { lang: l, t: Date.now() });
+  ucache.set(uid, { lang: l, t: Date.now(), banned: !!data?.banned });
   return l;
 }
 // Защита от «заливки» бота сообщениями: не больше 25 событий в минуту от одного человека (в памяти экземпляра)
@@ -59,6 +59,7 @@ async function route(u: Any) {
   let lang: Lang = "ru";
   if (chat && (chat.type === "group" || chat.type === "supergroup")) lang = asLang((await getGroup(chat.id))?.lang);
   else if (from) lang = await userLang(from.id, from.language_code);
+  if (from && from.id !== ADMIN() && ucache.get(from.id)?.banned) return;   // заблокированные не получают ответов
   return withLang(lang, () => dispatch(u));
 }
 async function dispatch(u: Any) {
@@ -211,6 +212,11 @@ async function adminCommand(m: Any, cmd: string, arg: string) {
     const codes = await createCodes({ plan: plan as "plus", days, uses, count });
     return send(chat, codes.length ? `Коды (${plan}, ${days} дн., по ${uses} исп.):\n<code>${codes.join("\n")}</code>` : "Не удалось создать коды (проверьте миграцию 002).");
   }
+  if (cmd === "/ban" || cmd === "/unban") {   // /ban <user_id> — заблокировать нарушителя, /unban <user_id> — вернуть
+    const id = Number(a[0]); if (!id || id === ADMIN()) return send(chat, "/ban <user_id>  ·  /unban <user_id>");
+    await ensureUser(id); await db.from("users").update({ banned: cmd === "/ban" }).eq("id", id); ucache.delete(id);
+    return send(chat, cmd === "/ban" ? `🚫 Пользователь ${id} заблокирован.` : `✅ Пользователь ${id} разблокирован.`);
+  }
   if (cmd === "/stats") {
     const { data: tick } = await db.from("meta").select("value").eq("key", "last_tick").maybeSingle();
     const ago = tick ? Math.round((Date.now() - new Date(tick.value as string).getTime()) / 60000) : null;
@@ -292,6 +298,14 @@ async function groupMessage(m: Any, text: string) {
 }
 
 async function joinGroup(chat: Any, fromId: number, announce: boolean) {
+  // защита сервера: слишком большие группы и «коллекционирование» групп одним человеком не принимаются
+  const [{ count: mine }, mc] = await Promise.all([db.from("groups").select("chat_id", { count: "exact", head: true }).eq("sponsor_id", fromId), tg("getChatMemberCount", { chat_id: chat.id })]);
+  const maxMembers = Number(Deno.env.get("MAX_GROUP_MEMBERS") ?? 300);
+  if ((mine ?? 0) >= 25 || (mc.ok && mc.result > maxMembers)) {
+    await send(chat.id, `Эта группа слишком большая (больше ${maxMembers} участников) или у вас уже много подключённых групп. Бот не может работать здесь и выходит. Для больших групп используйте команды /add напрямую в личном чате с ботом.`);
+    await tg("leaveChat", { chat_id: chat.id });
+    return null;
+  }
   const user = await ensureUser(fromId);
   const { count } = await db.from("groups").select("chat_id", { count: "exact", head: true }).eq("sponsor_id", fromId).eq("active", true).neq("chat_id", chat.id);
   const lim = limits(planOf(user));
