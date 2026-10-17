@@ -7,8 +7,8 @@ select cron.schedule(
   '* * * * *',
   $$
   select net.http_post(
-    url := 'https://ujvcphbwygjfefwuzgsu.supabase.co/functions/v1/cron',
-    headers := jsonb_build_object('Content-Type', 'application/json', 'x-cron-secret', '4b29694cd236c1772196c980359a0c2bf9bd4121d17c37a1'),
+    url := 'https://ВАШ_PROJECT_REF.supabase.co/functions/v1/cron',
+    headers := jsonb_build_object('Content-Type', 'application/json', 'x-cron-secret', 'ВАШ_CRON_SECRET'),
     body := '{}'::jsonb,
     timeout_milliseconds := 20000
   );
